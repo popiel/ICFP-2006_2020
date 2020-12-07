@@ -17,6 +17,8 @@ typedef struct {
 typedef struct profile {
     unsigned int size;
     unsigned int count;
+    unsigned int current;
+    unsigned int peak;
     struct profile* next;
     struct profile* times;
 } profile;
@@ -27,6 +29,8 @@ void count_alloc(unsigned int size) {
     for (profile* p = mem_profile; p; p = p->next) {
         if (p->size == size) {
             p->count++;
+            p->current++;
+            if (p->peak < p->current) p->peak = p->current;
             return;
         }
     }
@@ -34,6 +38,8 @@ void count_alloc(unsigned int size) {
     p->next = mem_profile;
     p->size = size;
     p->count = 1;
+    p->current = 1;
+    p->peak = 1;
     p->times = NULL;
     mem_profile = p;
 }
@@ -41,6 +47,7 @@ void count_alloc(unsigned int size) {
 void count_free(unsigned int size, unsigned int ticks) {
     for (profile* p = mem_profile; p; p = p->next) {
         if (p->size == size) {
+            p->current--;
             for (profile* t = p->times; t; t = t->next) {
                 if (t->size == ticks) {
                     t->count++;
@@ -59,12 +66,12 @@ void count_free(unsigned int size, unsigned int ticks) {
 }
 
 void report_profile() {
-    fprintf(stderr, "category,size,count,time\n");
+    fprintf(stderr, "category,size,time,count,peak\n");
     for (profile* p = mem_profile; p; p = p->next) {
-        fprintf(stderr, "alloc,%d,%d\n", p->size, p->count);
+        fprintf(stderr, "alloc,%d,,%d,%d\n", p->size, p->count, p->peak);
         unsigned int eternal = p->count;
         for (profile* t = p->times; t; t = t->next) {
-            fprintf(stderr, "free,%d,%d,%d\n", p->size, t->count, t->size);
+            fprintf(stderr, "free,%d,%d,%d\n", p->size, t->size, t->count);
             eternal -= t->count;
         }
         fprintf(stderr, "eternal,%d,%d\n", p->size, eternal);
@@ -181,11 +188,13 @@ int main(int argc, char** argv)
         case 10: putchar(C & 255); fflush(stdout); break;
         case 11:
             C = getchar();
+            /*
             if (C == EOF) {
                 fprintf(stderr, "EOF exit\n");
                 report_profile();
                 exit(0);
             }
+            */
             break;
         case 12:
             if (B) {
