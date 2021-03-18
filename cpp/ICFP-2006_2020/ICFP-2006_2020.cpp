@@ -5,6 +5,7 @@
 #include <io.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <winsock.h>
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -24,6 +25,9 @@ typedef struct profile {
 } profile;
 
 struct profile* mem_profile = NULL;
+
+unsigned char out_buffer[256];
+unsigned char* out = out_buffer;
 
 void count_alloc(unsigned int size) {
     for (profile* p = mem_profile; p; p = p->next) {
@@ -78,6 +82,80 @@ void report_profile() {
     }
 }
 
+void dump_state(unsigned int* registers, unsigned int finger, unsigned int num_arrays, tray* arrays) {
+    char filename[80];
+    time_t now = time(NULL);
+    struct tm now_tm;
+    localtime_s(&now_tm, &now);
+    strftime(filename, 79, "umDump-%Y-%m-%d_%H-%M-%S.um", &now_tm);
+    FILE* f;
+    fopen_s(&f, filename, "wb");
+    unsigned int size = sizeof(out_buffer) / 4;
+    for (unsigned int j = 0; j < num_arrays; j++) {
+        if (size <= arrays[j].size && arrays[j].data) size = arrays[j].size + 1;
+    }
+    unsigned int* buffer = (unsigned int*)calloc(size, sizeof(unsigned int));
+    buffer[0] = (14 << 28) + num_arrays;
+    buffer[1] = finger - 1;
+    memcpy(buffer + 2, registers, 8 * sizeof(unsigned int));
+    for (unsigned int j = 0; j < 10; j++) buffer[j] = htonl(buffer[j]);
+    fwrite(buffer, sizeof(unsigned int), 10, f);
+    memcpy(buffer, out, sizeof(out_buffer) - (out - out_buffer));
+    memcpy((unsigned char*)buffer + sizeof(out_buffer) - (out - out_buffer), out_buffer, out - out_buffer);
+    for (unsigned int j = 0; j < sizeof(out_buffer) / 4; j++) buffer[j] = htonl(buffer[j]);
+    fwrite(buffer, sizeof(unsigned int), sizeof(out_buffer) / 4, f);
+
+    for (unsigned int j = 0; j < num_arrays; j++) {
+        if (arrays[j].data) {
+            buffer[0] = htonl(arrays[j].size);
+            for (unsigned int k = 0; k < arrays[j].size; k++) buffer[k + 1] = htonl(arrays[j].data[k]);
+            fwrite(buffer, sizeof(unsigned int), arrays[j].size + 1, f);
+        } else {
+            buffer[0] = 0;
+            fwrite(buffer, sizeof(unsigned int), 1, f);
+        }
+    }
+    fclose(f);
+    fprintf(stderr, "Dumped state to %s\n", filename);
+}
+
+void load_state(unsigned int* registers, unsigned int* finger, unsigned int* num_arrays, tray** arrays, unsigned int* next_free) {
+    if (*finger != 1) {
+        fprintf(stderr, "Must restore state from beginning of array\n");
+        exit(1);
+    }
+    unsigned int* a0 = (*arrays)[0].data;
+    for (unsigned int j = 1; j < *num_arrays; j++) {
+        if ((*arrays)[j].data) free((*arrays)[j].data);
+    }
+    unsigned int saved_arrays = a0[0] & 0x0fffffff;
+    if (*num_arrays < saved_arrays) {
+        *num_arrays = saved_arrays;
+        *arrays = (tray*)realloc(arrays, *num_arrays * sizeof(tray));
+    }
+    *finger = a0[1];
+    memcpy(registers, a0 + 2, 8 * sizeof(unsigned int));
+    memcpy(out_buffer, a0 + 10, sizeof(out_buffer));
+    for (unsigned int j = 0; j < sizeof(out_buffer); j++) if (out_buffer[j]) putchar(out_buffer[j]);
+    fflush(stdout);
+    out = out_buffer;
+    *next_free = 0;
+    unsigned int pos = 10 + sizeof(out_buffer) / 4;
+    for (unsigned int j = 0; j < saved_arrays; j++) {
+        unsigned int size = a0[pos++];
+        if (size) {
+            (*arrays)[j].size = size;
+            (*arrays)[j].data = (unsigned int*)calloc(size, sizeof(unsigned int));
+            memcpy((*arrays)[j].data, a0 + pos, size * sizeof(unsigned int));
+        } else {
+            (*arrays)[j].size = *next_free;
+            (*arrays)[j].data = NULL;
+            *next_free = j;
+        }
+    }
+    free(a0);
+}
+
 int main(int argc, char** argv)
 {
     if (argc <= 1) {
@@ -113,8 +191,12 @@ int main(int argc, char** argv)
     tray* arrays = (tray*)calloc(num_arrays, sizeof(tray));
     arrays[0].data = a0;
     arrays[0].size = size / 4;
-    for (unsigned int j = 1; j < num_arrays; j++) arrays[j].size = (j + 1) % num_arrays;
+    for (unsigned int j = 1; j < num_arrays; j++) {
+        arrays[j].size = (j + 1) % num_arrays;
+        arrays[j].data = NULL;
+    }
     unsigned int next_free = 1;
+    memset(out_buffer, 0, 256);
 
     for (unsigned int tick = 0;; tick++)  {
         /*
@@ -164,6 +246,7 @@ int main(int argc, char** argv)
                 arrays = (tray*)realloc(arrays, num_arrays * sizeof(tray));
                 for (unsigned int j = next_free; j < num_arrays; j++) {
                     arrays[j].size = (j + 1) % num_arrays;
+                    arrays[j].data = NULL;
                 }
             }
             {
@@ -182,10 +265,16 @@ int main(int argc, char** argv)
             // fprintf(stderr, "freeing size %d at %d\n", arrays[C].size, C);
             count_free(arrays[C].size, tick - arrays[C].when);
             free(arrays[C].data);
+            arrays[C].data = NULL;
             arrays[C].size = next_free;
             next_free = C;
             break;
-        case 10: putchar(C & 255); fflush(stdout); break;
+        case 10:
+            *out++ = C & 255;
+            if (out - out_buffer > sizeof(out_buffer)) out = out_buffer;
+            putchar(C & 255);
+            fflush(stdout);
+            break;
         case 11:
             C = getchar();
             /*
@@ -195,6 +284,10 @@ int main(int argc, char** argv)
                 exit(0);
             }
             */
+            while (C == 7) {
+                dump_state(registers, finger, num_arrays, arrays);
+                C = getchar();
+            }
             break;
         case 12:
             if (B) {
@@ -208,6 +301,9 @@ int main(int argc, char** argv)
             break;
         case 13:
             D = V;
+            break;
+        case 14:
+            load_state(registers, &finger, &num_arrays, &arrays, &next_free);
             break;
         default:
             fprintf(stderr, "illegal operator at %d: %08x\n", finger - 1, op);
