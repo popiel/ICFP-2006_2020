@@ -9,10 +9,10 @@ fun main(args: Array<String>) {
         println("Cannot read file ${args[0]}")
         System.exit(1)
     }
-    val a0 = IntArray(fs.length() / 4)
+    val a0 = IntArray(file.length().toInt() / 4)
     FileInputStream(file).use { fs ->
         val ds = DataInputStream(BufferedInputStream(fs))
-        for (j in 0..(a0.length - 1)) a0[j] = ds.readInt()
+        for (j in 0..(a0.size - 1)) a0[j] = ds.readInt()
     }
 
     UM(a0).run()
@@ -28,16 +28,16 @@ class UM(a0: IntArray) {
 
     var A: Int
         inline get() = registers[(operator shr 6) and 7]
-        inline set(value) = registers[(operator shr 6) and 7] = value
+        inline set(value) { registers[(operator shr 6) and 7] = value }
     var B: Int
         inline get() = registers[(operator shr 3) and 7]
-        inline set(value) = registers[(operator shr 3) and 7] = value
+        inline set(value) { registers[(operator shr 3) and 7] = value }
     var C: Int
         inline get() = registers[(operator shr 0) and 7]
-        inline set(value) = registers[(operator shr 0) and 7] = value
+        inline set(value) { registers[(operator shr 0) and 7] = value }
     var D: Int
         inline get() = registers[(operator shr 25) and 7]
-        inline set(value) = registers[(operator shr 25) and 7] = value
+        inline set(value) { registers[(operator shr 25) and 7] = value }
     val V: Int
         inline get() = operator and 0x01FFFFFF
 
@@ -50,33 +50,36 @@ class UM(a0: IntArray) {
     
             while (true) {
                 operator = arrays[0][finger]
+                // println("finger: $finger  operator: ${java.lang.Integer.toHexString(operator)}")
                 finger += 1
-                when (operator ushr 24) {
+                when (operator ushr 28) {
                     0 -> if (C != 0) A = B
                     1 -> A = arrays[B][C]
                     2 -> arrays[A][B] = C
                     3 -> A = B + C
-                    4 -> A = (B.toUInt * C.toUInt).toInt
-                    5 -> A = (B.toUInt / C.toUInt).toInt
-                    6 -> A = inv(B and C)
-                    7 -> return
-                    8 ->
+                    4 -> A = (B.toUInt() * C.toUInt()).toInt()
+                    5 -> A = (B.toUInt() / C.toUInt()).toInt()
+                    6 -> A = (B and C).inv()
+                    7 -> return@run
+                    8 -> {
                         val fresh = if (C == 0) blank else IntArray(C)
-                        if (available.size() == 0) {
-                            B = arrays.length
+                        if (available.size == 0) {
+                            B = arrays.size
                             arrays += fresh
                         } else {
-                            B = available.pop()
+                            B = available.removeLast()
                             arrays[B] = fresh
                         }
-                    9 -> arrays[C] = blank; available.push(C)
-                    10 -> output.write(C); terminal.flush()
+                    }
+                    9 -> { arrays[C] = blank; available.add(C) }
+                    10 -> { output.write(C); terminal.flush() }
                     11 -> try { C = input.read() } catch (e: EOFException) { C = -1 }
-                    12 ->
+                    12 -> {
                         if (B != 0) arrays[0] = arrays[B].clone()
                         finger = C
+                    }
                     13 -> D = V
-                    else -> println("Illegal operation"); System.exit(1)
+                    else -> { println("Illegal operation ${operator ushr 28}"); System.exit(1) }
                 }
             }
         }
