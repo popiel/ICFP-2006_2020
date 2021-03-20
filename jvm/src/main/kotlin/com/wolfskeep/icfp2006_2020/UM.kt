@@ -2,6 +2,8 @@ package com.wolfskeep.icfp2006_2020
 
 import java.io.*
 import java.time.*
+import org.jline.keymap.*
+import org.jline.reader.*
 import org.jline.terminal.*
 
 fun main(args: Array<String>) {
@@ -86,10 +88,15 @@ class UM(
 
     fun run() {
         TerminalBuilder.terminal().use { terminal ->
-            terminal.enterRawMode()
-            terminal.echo(true)
-            val input = terminal.input()
+            val reader = LineReaderBuilder.builder().terminal(terminal).build()
+            val map = reader.getKeyMaps().get(LineReader.MAIN)!!
+            val binding = object: Widget {
+                override fun apply(): Boolean { dumpState(); return true }
+            }
+            map.bind(binding, KeyMap.ctrl('G'))
+
             val output = terminal.output()
+            var pendingLine = ""
     
             while (true) {
                 operator = arrays[0][finger]
@@ -122,21 +129,13 @@ class UM(
                         terminal.flush()
                     }
                     11 -> try {
-                        val c = input.read()
-                        if (c == 7) {
-                            dumpState()
-                            finger -= 1
-                        } else if (c == 13) {
-                            output.write(10)
-                            terminal.flush()
-                            C = 10
-                            outBuffer[outPos] = C.toByte()
-                            outPos = (outPos + 1) % outBuffer.size
-                        } else {
-                            C = c
-                            outBuffer[outPos] = C.toByte()
-                            outPos = (outPos + 1) % outBuffer.size
+                        if (pendingLine == "") {
+                            pendingLine = reader.readLine() + "\n"
                         }
+                        outBuffer[outPos] = pendingLine[0].toByte()
+                        C = outBuffer[outPos].toInt()
+                        outPos = (outPos + 1) % outBuffer.size
+                        pendingLine = pendingLine.drop(1)
                     } catch (e: EOFException) { C = -1 }
                     12 -> {
                         if (B != 0) arrays[0] = arrays[B].clone()
