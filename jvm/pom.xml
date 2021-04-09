@@ -46,6 +46,11 @@
             <artifactId>kotlin-test</artifactId>
             <version>${kotlin.version}</version>
         </dependency>
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy</artifactId>
+            <version>1.10.20</version>
+        </dependency>
     </dependencies>
 
     <build>

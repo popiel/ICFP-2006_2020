@@ -2,14 +2,19 @@ package com.wolfskeep.icfp2006_2020
 
 import java.io.*
 import java.time.*
+import java.util.*
 import net.bytebuddy.*
 import net.bytebuddy.dynamic.scaffold.*
-import net.bytebuddy.description.field.*
+import net.bytebuddy.description.method.*
+import net.bytebuddy.description.type.*
 import net.bytebuddy.implementation.*
 import net.bytebuddy.implementation.bytecode.*
+import net.bytebuddy.implementation.bytecode.constant.*
+import net.bytebuddy.implementation.bytecode.member.*
 import org.jline.keymap.*
 import org.jline.reader.*
 import org.jline.terminal.*
+import org.objectweb.asm.*
 
 fun main(args: Array<String>) {
     val file = File(args[0])
@@ -64,15 +69,15 @@ interface Fragment {
 }
 
 abstract class Operation(val operation: Int): StackManipulation {
-    inline fun code = operation ushr 28
-    inline fun a = operation shr 6 and 7
-    inline fun b = operation shr 3 and 7
-    inline fun c = operation shr 0 and 7
-    inline fun d = operation shr 25 and 7
+    inline val code get() = operation ushr 28
+    inline val a get() = operation shr 6 and 7
+    inline val b get() = operation shr 3 and 7
+    inline val c get() = operation shr 0 and 7
+    inline val d get() = operation shr 25 and 7
 
     override fun isValid() = true
 
-    fun toList(): List<Operation>
+    abstract fun toList(): List<Operation>
 
     companion object {
         fun invokeUMMethod(name: String, vararg args: StackManipulation): StackManipulation {
@@ -181,7 +186,7 @@ abstract class RegOut(operation: Int, touched: Array<RegOut?>): Operation(operat
         } else {
             compute
         }
-        if (exposed)
+        if (exposed) {
             setRegisterLeavingValueOnStack(regOut, local).apply(mv, context)
         } else {
             local.apply(mv, context)
@@ -311,7 +316,7 @@ class IF(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
         val endLabel = Label()
         StackManipulation.Compound(
             test ?: getRegister(c),
-            JumpIfZero(midLabel)
+            JumpIfZero(midLabel),
             nonzero ?: getRegister(b),
             Jump(endLabel),
             SetLabel(midLabel),
@@ -576,7 +581,7 @@ class JUMP(operation: Int, touched: Array<RegOut?>): Operation(operation) {
                 Jump(endLabel),
                 SetLabel(midLabel),
                 Removal.SINGLE,
-                SetLabel(endLabel)
+                SetLabel(endLabel),
                 jump
             )
         }
@@ -642,7 +647,7 @@ fun assembleFragment(code: List<Operation>, finalPos: Int, um: UM): Fragment {
 
     locals.forEachIndexed { index, op -> (op as RegOut).tmpIndex = index + 2 }
 
-    return new ByteBuddy()
+    return ByteBuddy()
         .subclass(Fragment::class.java)
         .method(named("getStart")).intercept(FixedValue.value(um.finger))
         .field(named("getEnd")).intercept(FixedValue.value(finalPos))
@@ -739,7 +744,7 @@ class UM(
                         fragRun += 1
                         fragment.run(this)
                     } else {
-                        interpreter:
+                        interpreter@
                         while (true) {
                             operator = arrays[0][finger]
                             // println("finger: $finger  operator: ${java.lang.Integer.toHexString(operator)}")
