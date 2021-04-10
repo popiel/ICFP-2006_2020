@@ -72,12 +72,16 @@ interface Fragment {
     fun run(um: UM)
 }
 
-abstract class Operation(val operation: Int): StackManipulation {
+abstract class Operation(val operation: Int, touched: Array<RegOut?>): StackManipulation {
     inline val code get() = operation ushr 28
     inline val a get() = operation shr 6 and 7
     inline val b get() = operation shr 3 and 7
     inline val c get() = operation shr 0 and 7
     inline val d get() = operation shr 25 and 7
+
+    val A = touched[a]
+    val B = touched[b]
+    val C = touched[c]
 
     override fun isValid() = true
 
@@ -93,7 +97,7 @@ abstract class Operation(val operation: Int): StackManipulation {
 
     companion object {
         fun invokeUMMethod(name: String, vararg args: StackManipulation): StackManipulation {
-            val method = MethodDescription.ForLoadedMethod(UM::class.java.getMethod(name))
+            val method = MethodDescription.ForLoadedMethod(UM::class.java.getMethod(name, *Array<Class<*>>(args.size) { Int::class.java }))
             return StackManipulation.Compound(
                 MethodVariableAccess.REFERENCE.loadFrom(1),
                 *args,
@@ -113,11 +117,11 @@ abstract class Operation(val operation: Int): StackManipulation {
         fun clearCorruptedFragments(what: StackManipulation) = invokeUMMethod("clearCorruptedFragments", what)
 
         val clear = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(SortedMap::class.java.getMethod("clear")))
-        val clone = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(IntArray::class.java.getMethod("clone")))
+        val clone = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(Object::class.java.getDeclaredMethod("clone")))
     }
 }
 
-abstract class RegOut(operation: Int, touched: Array<RegOut?>): Operation(operation) {
+abstract class RegOut(operation: Int, touched: Array<RegOut?>): Operation(operation, touched) {
     val regOut = when (code) {
         0, 1, 3, 4, 5, 6 -> a
         8 -> b
@@ -216,7 +220,7 @@ class JumpIfGreaterThanOrEqual(val label: Label): StackManipulation {
     }
 }
 
-class Jump(val label: Label): StackManipulation {
+class JumpAlways(val label: Label): StackManipulation {
     override fun isValid() = true
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         mv.visitJumpInsn(GOTO, label)
@@ -286,9 +290,9 @@ object Dup_x2: StackManipulation {
 }
 
 class IF(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
-    val test = touched[c]
-    val zero = if (test?.canBeZero() ?: true) touched[a] else null
-    val nonzero = if (test?.possibleValues() != setOf(0)) touched[b] else null
+    val test = C
+    val zero = if (test?.canBeZero() ?: true) A else null
+    val nonzero = if (test?.possibleValues() != setOf(0)) B else null
 
     init {
         zero?.let { it.refCount += 1 }
@@ -324,7 +328,7 @@ class IF(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
             test ?: getRegister(c),
             JumpIfZero(midLabel),
             nonzero ?: getRegister(b),
-            Jump(endLabel),
+            JumpAlways(endLabel),
             SetLabel(midLabel),
             zero ?: getRegister(a),
             SetLabel(endLabel)
@@ -333,8 +337,8 @@ class IF(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
 }
 
 class LOAD(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
-    val array = touched[b]
-    val offset = touched[c]
+    val array = B
+    val offset = C
 
     init {
         array?.let { it.refCount += 1 }
@@ -352,10 +356,10 @@ class LOAD(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) 
     )
 }
 
-class STORE(operation: Int, touched: Array<RegOut?>, val nextPos: Int): Operation(operation) {
-    val array = touched[a]
-    val offset = touched[b]
-    val value = touched[c]
+class STORE(operation: Int, touched: Array<RegOut?>, val nextPos: Int): Operation(operation, touched) {
+    val array = A
+    val offset = B
+    val value = C
 
     val exposes = touched.clone()
     var finalPos: Int = -1
@@ -393,7 +397,7 @@ class STORE(operation: Int, touched: Array<RegOut?>, val nextPos: Int): Operatio
                 ArrayAccess.INTEGER.store(),
                 JumpIfZero(midLabel),
                 Removal.SINGLE,
-                Jump(endLabel),
+                JumpAlways(endLabel),
                 SetLabel(midLabel),
                 Duplication.SINGLE,
                 clearCorruptedFragments(Swap),
@@ -413,8 +417,8 @@ class STORE(operation: Int, touched: Array<RegOut?>, val nextPos: Int): Operatio
 }
 
 class ADD(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
-    val left = touched[b]
-    val right = touched[c]
+    val left = B
+    val right = C
 
     init {
         left?.let { it.refCount += 1 }
@@ -434,8 +438,8 @@ class ADD(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
 }
 
 class MUL(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
-    val left = touched[b]
-    val right = touched[c]
+    val left = B
+    val right = C
 
     init {
         left?.let { it.refCount += 1 }
@@ -452,8 +456,8 @@ class MUL(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
 }
 
 class DIV(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
-    val left = touched[b]
-    val right = touched[c]
+    val left = B
+    val right = C
 
     init {
         left?.let { it.refCount += 1 }
@@ -472,8 +476,8 @@ class DIV(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
 }
 
 class NAND(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
-    val left = touched[b]
-    val right = touched[c]
+    val left = B
+    val right = C
 
     init {
         left?.let { it.refCount += 1 }
@@ -489,7 +493,7 @@ class NAND(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) 
     )
 }
 
-object EXIT: Operation(0) {
+object EXIT: Operation(0, arrayOfNulls(8)) {
     override fun toList() = listOf(this)
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
@@ -498,7 +502,7 @@ object EXIT: Operation(0) {
 }
 
 class NEW(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
-    val size = touched[c]
+    val size = C
 
     init {
         size?.let { it.refCount += 1 }
@@ -511,8 +515,8 @@ class NEW(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
     override val compute = allocate(size ?: getRegister(c))
 }
 
-class FREE(operation: Int, touched: Array<RegOut?>): Operation(operation) {
-    val array = touched[c]
+class FREE(operation: Int, touched: Array<RegOut?>): Operation(operation, touched) {
+    val array = C
 
     init {
         array?.let { it.refCount += 1 }
@@ -525,8 +529,8 @@ class FREE(operation: Int, touched: Array<RegOut?>): Operation(operation) {
     }
 }
 
-class OUTPUT(operation: Int, touched: Array<RegOut?>): Operation(operation) {
-    val value = touched[c]
+class OUTPUT(operation: Int, touched: Array<RegOut?>): Operation(operation, touched) {
+    val value = C
 
     init {
         value?.let { it.refCount += 1 }
@@ -547,9 +551,9 @@ class INPUT(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched)
     val exposes = touched.clone()
 }
 
-class JUMP(operation: Int, touched: Array<RegOut?>): Operation(operation) {
-    val array = touched[b]
-    val offset = touched[c]
+class JUMP(operation: Int, touched: Array<RegOut?>): Operation(operation, touched) {
+    val array = B
+    val offset = C
 
     val exposes = touched.clone()
 
@@ -584,7 +588,7 @@ class JUMP(operation: Int, touched: Array<RegOut?>): Operation(operation) {
                 ArrayAccess.REFERENCE.store(),
                 getFragments,
                 clear,
-                Jump(endLabel),
+                JumpAlways(endLabel),
                 SetLabel(midLabel),
                 Removal.SINGLE,
                 SetLabel(endLabel),
@@ -603,6 +607,30 @@ class CONST(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched)
     override val compute = IntegerConstant.forValue(operation and 0x1ffffff)
 }
 
+fun decode(operator: Int): String {
+    val AN: String = "abcdefgh"[operator shr 6 and 7].toString()
+    val BN: String = "abcdefgh"[operator shr 3 and 7].toString()
+    val CN: String = "abcdefgh"[operator shr 0 and 7].toString()
+    val DN: String = "abcdefgh"[operator shr 25 and 7].toString()
+    return when (operator ushr 28) {
+        0 -> "IF ($CN) $AN = $BN"
+        1 -> "$AN = arrays[$BN][$CN]"
+        2 -> "arrays[$AN][$BN] = $CN"
+        3 -> "$AN = $BN + $CN"
+        4 -> "$AN = $BN * $CN"
+        5 -> "$AN = $BN / $CN"
+        6 -> "$AN = $BN nand $CN"
+        7 -> "EXIT"
+        8 -> "$BN = NEW $CN"
+        9 -> "FREE $CN"
+        10 -> "OUT $CN"
+        11 -> "IN $CN"
+        12 -> "JUMP [$BN][$CN]"
+        13 -> "$DN = ${operator and 0x1ffffff}"
+        else -> "Illegal"
+    }
+}
+
 fun compileFragment(um: UM): Fragment {
     val a0 = um.arrays[0]
     val touched = Array<RegOut?>(8) { null }
@@ -611,6 +639,7 @@ fun compileFragment(um: UM): Fragment {
     decode@
     while (true) {
         val operation = a0[pos]
+        println("$pos: ${decode(operation)}")
         pos += 1
         when (operation ushr 28) {
             0 -> IF(operation, touched)
@@ -635,7 +664,7 @@ fun compileFragment(um: UM): Fragment {
         is STORE -> {
             it.finalPos = pos
             if ((it.array?.canBeZero() ?: true) &&
-                (it.offset?.possibleValues()?.intersect(um.finger until pos)?.isNotEmpty() ?: true)) {
+                    (it.offset?.possibleValues()?.intersect(um.finger until pos)?.isNotEmpty() ?: true)) {
                 it.exposes.forEach { it?.exposed = true }
             }
         }
@@ -648,50 +677,50 @@ fun compileFragment(um: UM): Fragment {
 
 fun assembleFragment(code: List<Operation>, finalPos: Int, um: UM): Fragment {
     val locals = code
-        .flatMap { it.toList() }
-        .filter { (it is RegOut) && it.refCount > 1 }
-        .distinct()
+            .flatMap { it.toList() }
+            .filter { (it is RegOut) && it.refCount > 1 }
+            .distinct()
 
     locals.forEachIndexed { index, op -> (op as RegOut).tmpIndex = index + 2 }
 
     return ByteBuddy()
-        .subclass(Fragment::class.java)
-        .method(named("getStart")).intercept(FixedValue.value(um.finger))
-        .method(named("getEnd")).intercept(FixedValue.value(finalPos))
-        .method(named("run")).intercept(object: Implementation {
-            override fun prepare(instrumentedType: InstrumentedType) = instrumentedType
-            override fun appender(target: Implementation.Target?): ByteCodeAppender? {
-                return object: ByteCodeAppender {
-                    override fun apply(mv: MethodVisitor, context: Implementation.Context, method: MethodDescription): ByteCodeAppender.Size {
-                        return ByteCodeAppender.Size(
-                            code.fold(0) { acc, op -> Math.max(acc, op.apply(mv, context).getMaximalSize()) },
-                            locals.size + 2
-                        )
+            .subclass(Fragment::class.java)
+            .method(named("getStart")).intercept(FixedValue.value(um.finger))
+            .method(named("getEnd")).intercept(FixedValue.value(finalPos))
+            .method(named("run")).intercept(object: Implementation {
+                override fun prepare(instrumentedType: InstrumentedType) = instrumentedType
+                override fun appender(target: Implementation.Target?): ByteCodeAppender? {
+                    return object: ByteCodeAppender {
+                        override fun apply(mv: MethodVisitor, context: Implementation.Context, method: MethodDescription): ByteCodeAppender.Size {
+                            return ByteCodeAppender.Size(
+                                    code.fold(0) { acc, op -> Math.max(acc, op.apply(mv, context).getMaximalSize()) },
+                                    locals.size + 2
+                            )
+                        }
                     }
                 }
-            }
-        })
-        .make()
-        .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
-        .getLoaded()
-        .newInstance()
+            })
+            .make()
+            .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+            .getLoaded()
+            .newInstance()
 }
 
 class CleanExitException(): RuntimeException()
 
 class UM(
-    val arrays: MutableList<IntArray>,
-    val available: ArrayDeque<Int>,
-    val registers: IntArray,
-    var finger: Int,
-    val outBuffer: ByteArray
+        val arrays: MutableList<IntArray>,
+        val available: ArrayDeque<Int>,
+        val registers: IntArray,
+        var finger: Int,
+        val outBuffer: ByteArray
 ) {
     constructor(a0: IntArray): this(
-        mutableListOf(a0),
-        ArrayDeque<Int>(),
-        IntArray(8),
-        0,
-        ByteArray(256)
+            mutableListOf(a0),
+            ArrayDeque<Int>(),
+            IntArray(8),
+            0,
+            ByteArray(256)
     ) {}
 
     val blank = IntArray(0)
@@ -745,6 +774,8 @@ class UM(
                             compileFragment(this)
                         } catch (e: Exception) {
                             fragFailure += 1
+                            println("compile failed:")
+                            e.printStackTrace()
                             null
                         }
                     }
@@ -756,7 +787,7 @@ class UM(
                         while (true) {
                             operator = arrays[0][finger]
                             // println("finger: $finger  operator: ${java.lang.Integer.toHexString(operator)}")
-                            println(decode())
+                            println(decode(operator))
                             finger += 1
                             when (operator ushr 28) {
                                 0 -> if (C != 0) A = B
@@ -860,30 +891,6 @@ class UM(
         outPos = (outPos + 1) % outBuffer.size
         terminalOut!!.flush()
     }
-
-    val AN: String get() = "abcdefgh"[operator shr 6 and 7].toString()
-    val BN: String get() = "abcdefgh"[operator shr 3 and 7].toString()
-    val CN: String get() = "abcdefgh"[operator shr 0 and 7].toString()
-    val DN: String get() = "abcdefgh"[operator shr 25 and 7].toString()
-
-    fun decode(): String = when (operator ushr 28) {
-        0 -> "IF ($CN) $AN = $BN"
-        1 -> "$AN = arrays[$BN][$CN]"
-        2 -> "arrays[$AN][$BN] = $CN"
-        3 -> "$AN = $BN + $CN"
-        4 -> "$AN = $BN * $CN"
-        5 -> "$AN = $BN / $CN"
-        6 -> "$AN = $BN nand $CN"
-        7 -> "EXIT"
-        8 -> "$BN = NEW $CN"
-        9 -> "FREE $CN"
-        10 -> "OUT $CN"
-        11 -> "IN $CN"
-        12 -> "$finger: JUMP [$BN][$CN]"
-        13 -> "$DN = $V"
-        else -> "Illegal"
-    }
-        
 
     fun dumpState() {
         val name = String.format("umDump-%1\$tY-%1\$tm-%1\$td_%1\$tH-%1\$tM-%1\$tS.um", LocalDateTime.now())
