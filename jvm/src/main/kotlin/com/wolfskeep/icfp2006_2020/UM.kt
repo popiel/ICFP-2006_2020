@@ -10,6 +10,7 @@ import net.bytebuddy.description.type.*
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy
 import net.bytebuddy.implementation.*
 import net.bytebuddy.implementation.bytecode.*
+import net.bytebuddy.implementation.bytecode.assign.TypeCasting
 import net.bytebuddy.implementation.bytecode.collection.ArrayAccess
 import net.bytebuddy.implementation.bytecode.constant.*
 import net.bytebuddy.implementation.bytecode.member.*
@@ -95,6 +96,15 @@ abstract class Operation(val operation: Int, touched: Array<RegOut?>): StackMani
         )
     }
 
+    fun setRegister(which: Int, value: StackManipulation): StackManipulation {
+        return StackManipulation.Compound(
+            getRegisters,
+            IntegerConstant.forValue(which),
+            value,
+            ArrayAccess.INTEGER.store()
+        )
+    }
+
     companion object {
         fun invokeUMMethod(name: String, vararg args: StackManipulation): StackManipulation {
             val method = MethodDescription.ForLoadedMethod(UM::class.java.getMethod(name, *Array<Class<*>>(args.size) { Int::class.java }))
@@ -114,10 +124,17 @@ abstract class Operation(val operation: Int, touched: Array<RegOut?>): StackMani
         fun free(which: StackManipulation) = invokeUMMethod("free", which)
         val input = invokeUMMethod("input")
         fun output(what: StackManipulation) = invokeUMMethod("output", what)
-        fun clearCorruptedFragments(what: StackManipulation) = invokeUMMethod("clearCorruptedFragments", what)
+        fun clearCorruptedFragments(array: StackManipulation, offset: StackManipulation, nextPos: Int, finalPos: Int) =
+            invokeUMMethod("clearCorruptedFragments", array, offset, IntegerConstant.forValue(nextPos), IntegerConstant.forValue(finalPos))
+        fun doIfAssign(a: StackManipulation, b: StackManipulation, c: StackManipulation) = invokeUMMethod("doIfAssign", a, b, c)
+        fun doCloneArray(which: StackManipulation) = invokeUMMethod("doCloneArray", which)
 
         val clear = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(SortedMap::class.java.getMethod("clear")))
         val clone = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(Object::class.java.getDeclaredMethod("clone")))
+        val arrayList_get = StackManipulation.Compound(
+            MethodInvocation.invoke(MethodDescription.ForLoadedMethod(java.util.List::class.java.getDeclaredMethod("get", Int::class.java))),
+            TypeCasting.to(TypeDescription.ForLoadedType(IntArray::class.java))
+        )
     }
 }
 
@@ -173,6 +190,7 @@ abstract class RegOut(operation: Int, touched: Array<RegOut?>): Operation(operat
             compute
         }
         return if (exposed) {
+            scopeStart = Label()
             setRegisterLeavingValueOnStack(regOut, local).apply(mv, context)
         } else {
             local.apply(mv, context)
@@ -269,7 +287,7 @@ object Dup2_x1: StackManipulation {
     override fun isValid() = true
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         mv.visitInsn(DUP2_X1)
-        return StackManipulation.Size(0, 0)
+        return StackManipulation.Size(2, 2)
     }
 }
 
@@ -277,7 +295,7 @@ object Dup_x1: StackManipulation {
     override fun isValid() = true
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         mv.visitInsn(DUP_X1)
-        return StackManipulation.Size(0, 0)
+        return StackManipulation.Size(1, 1)
     }
 }
 
@@ -285,7 +303,7 @@ object Dup_x2: StackManipulation {
     override fun isValid() = true
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         mv.visitInsn(DUP_X2)
-        return StackManipulation.Size(0, 0)
+        return StackManipulation.Size(1, 1)
     }
 }
 
@@ -317,23 +335,7 @@ class IF(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
         else if (test?.canBeZero() == false) nonzero?.canBeZero() ?: true
         else !(zero?.canBeZero() == false && nonzero?.canBeZero() == false)
 
-    override val compute = if (test?.possibleValues() == setOf(0)) {
-        zero ?: getRegister(a)
-    } else if (test?.canBeZero() == false) {
-        nonzero ?: getRegister(b)
-    } else {
-        val midLabel = Label()
-        val endLabel = Label()
-        StackManipulation.Compound(
-            test ?: getRegister(c),
-            JumpIfZero(midLabel),
-            nonzero ?: getRegister(b),
-            JumpAlways(endLabel),
-            SetLabel(midLabel),
-            zero ?: getRegister(a),
-            SetLabel(endLabel)
-        )
-    }
+    override val compute = doIfAssign(zero ?: getRegister(a), nonzero ?: getRegister(b), test ?: getRegister(c))
 }
 
 class LOAD(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
@@ -350,7 +352,7 @@ class LOAD(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) 
     override val compute = StackManipulation.Compound(
         getArrays,
         array ?: getRegister(b),
-        ArrayAccess.REFERENCE.load(),
+        arrayList_get,
         offset ?: getRegister(c),
         ArrayAccess.INTEGER.load()
     )
@@ -373,46 +375,41 @@ class STORE(operation: Int, touched: Array<RegOut?>, val nextPos: Int): Operatio
     override fun toList() = (array?.toList() ?: listOf()) + (offset?.toList() ?: listOf()) + (value?.toList() ?: listOf()) + this
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return (if ((array?.canBeZero() ?: true) == false) {
+        val remedial = StackManipulation.Compound(*exposes.mapNotNull { it?.let { reg ->
+            if (reg.scopeStart == null &&
+                reg != array && reg != offset && reg != value) {
+                StackManipulation.Compound(reg, Removal.SINGLE)
+            } else {
+                null
+            }
+        }}.toTypedArray())
+        return StackManipulation.Compound(remedial, (if ((array?.canBeZero() ?: true) == false) {
             StackManipulation.Compound(
                 getArrays,
                 array ?: getRegister(a),
-                ArrayAccess.REFERENCE.load(),
+                arrayList_get,
                 offset ?: getRegister(b),
                 value ?: getRegister(c),
                 ArrayAccess.INTEGER.store()
             )
         } else {
-            val midLabel = Label()
-            val lessLabel = Label()
-            val endLabel = Label()
-            StackManipulation.Compound(
-                getArrays,
-                array ?: getRegister(a),
-                Dup_x1,
-                ArrayAccess.REFERENCE.load(),
-                offset ?: getRegister(b),
-                Dup_x2,
-                value ?: getRegister(c),
-                ArrayAccess.INTEGER.store(),
-                JumpIfZero(midLabel),
-                Removal.SINGLE,
-                JumpAlways(endLabel),
-                SetLabel(midLabel),
-                Duplication.SINGLE,
-                clearCorruptedFragments(Swap),
-                Duplication.SINGLE,
-                IntegerConstant.forValue(nextPos),
-                JumpIfLessThan(lessLabel),
-                IntegerConstant.forValue(finalPos),
-                JumpIfGreaterThanOrEqual(endLabel),
-                setFinger(IntegerConstant.forValue(nextPos)),
-                MethodReturn.VOID,
-                SetLabel(lessLabel),
-                Removal.SINGLE,
-                SetLabel(endLabel)
+            clearCorruptedFragments(
+                StackManipulation.Compound(
+                    getArrays,
+                    array ?: getRegister(a),
+                    Dup_x1,
+                    arrayList_get,
+                ),
+                StackManipulation.Compound(
+                    offset ?: getRegister(b),
+                    Dup_x1,
+                    value ?: getRegister(c),
+                    ArrayAccess.INTEGER.store()
+                ),
+                nextPos,
+                finalPos
             )
-        }).apply(mv, context)
+        })).apply(mv, context)
     }
 }
 
@@ -543,12 +540,23 @@ class OUTPUT(operation: Int, touched: Array<RegOut?>): Operation(operation, touc
     }
 }
 
-class INPUT(operation: Int, touched: Array<RegOut?>): RegOut(operation, touched) {
+class INPUT(operation: Int, touched: Array<RegOut?>): Operation(operation, touched) {
     override fun toList() = listOf(this)
 
-    override val compute = input
-
     val exposes = touched.clone()
+
+    init { touched[c] = null }
+
+    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
+        val remedial = StackManipulation.Compound(*exposes.mapNotNull { it?.let { reg ->
+            if (reg.scopeStart == null) {
+                StackManipulation.Compound(reg, Removal.SINGLE)
+            } else {
+                null
+            }
+        }}.toTypedArray())
+        return StackManipulation.Compound(remedial, setRegister(c, input)).apply(mv, context)
+    }
 }
 
 class JUMP(operation: Int, touched: Array<RegOut?>): Operation(operation, touched) {
@@ -565,6 +573,13 @@ class JUMP(operation: Int, touched: Array<RegOut?>): Operation(operation, touche
     override fun toList() = (array?.toList() ?: listOf()) + (offset?.toList() ?: listOf()) + this
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
+        val remedial = StackManipulation.Compound(*exposes.mapNotNull { it?.let { reg ->
+            if (reg.scopeStart == null && reg != array && reg != offset) {
+                StackManipulation.Compound(reg, Removal.SINGLE)
+            } else {
+                null
+            }
+        }}.toTypedArray())
         val jump = StackManipulation.Compound(
             setFinger(offset ?: getRegister(c)),
             MethodReturn.VOID
@@ -572,30 +587,12 @@ class JUMP(operation: Int, touched: Array<RegOut?>): Operation(operation, touche
         val check = if (array?.possibleValues() == setOf(0)) {
             jump
         } else {
-            val midLabel = Label()
-            val endLabel = Label()
             StackManipulation.Compound(
-                array ?: getRegister(b),
-                Duplication.SINGLE,
-                JumpIfZero(midLabel),
-                getArrays,
-                Dup_x1,
-                Swap,
-                ArrayAccess.REFERENCE.load(),
-                clone,
-                IntegerConstant.forValue(0),
-                Swap,
-                ArrayAccess.REFERENCE.store(),
-                getFragments,
-                clear,
-                JumpAlways(endLabel),
-                SetLabel(midLabel),
-                Removal.SINGLE,
-                SetLabel(endLabel),
+                doCloneArray(array ?: getRegister(b)),
                 jump
             )
         }
-        return check.apply(mv, context)
+        return StackManipulation.Compound(remedial, check).apply(mv, context)
     }
 }
 
@@ -650,12 +647,12 @@ fun compileFragment(um: UM): Fragment {
             5 -> DIV(operation, touched)
             6 -> NAND(operation, touched)
             7 -> { code += EXIT; break@decode }
-            8 -> code += NEW(operation, touched)
+            8 -> NEW(operation, touched)
             9 -> code += FREE(operation, touched)
             10 -> code += OUTPUT(operation, touched)
             11 -> code += INPUT(operation, touched)
             12 -> { code += JUMP(operation, touched); break@decode }
-            13 -> code += CONST(operation, touched)
+            13 -> CONST(operation, touched)
             else -> throw IllegalArgumentException()
         }
     }
@@ -706,6 +703,7 @@ fun assembleFragment(code: List<Operation>, finalPos: Int, um: UM): Fragment {
             .newInstance()
 }
 
+class InterruptedFragmentException(): RuntimeException()
 class CleanExitException(): RuntimeException()
 
 class UM(
@@ -781,7 +779,9 @@ class UM(
                     }
                     if (fragment != null) {
                         fragRun += 1
-                        fragment.run(this)
+                        try {
+                            fragment.run(this)
+                        } catch (e: InterruptedFragmentException) { /* NOTHING */ }
                     } else {
                         interpreter@
                         while (true) {
@@ -794,7 +794,7 @@ class UM(
                                 1 -> A = arrays[B][C]
                                 2 -> {
                                     arrays[A][B] = C
-                                    if (A == 0) clearCorruptedFragments(B)
+                                    if (A == 0) clearCorruptedFragments(0, B, -1, -1)
                                 }
                                 3 -> A = B + C
                                 4 -> A = (B.toUInt() * C.toUInt()).toInt()
@@ -838,14 +838,29 @@ class UM(
         }
     }
 
-    fun clearCorruptedFragments(where: Int) {
-        val iter = fragments.entries.iterator()
-        while (iter.hasNext()) {
-            val entry = iter.next()
-            if (entry.key > where) break
-            if (entry.value.end >= where) {
-                fragInvalidate += 1
-                iter.remove()
+    fun doIfAssign(a: Int, b: Int, c: Int) = if (c == 0) a else b
+
+    fun doCloneArray(which: Int) {
+        if (which != 0) {
+            fragments.clear()
+            arrays[0] = arrays[which].clone()
+        }
+    }
+
+    fun clearCorruptedFragments(array: Int, offset: Int, nextPos: Int, finalPos: Int) {
+        if (array == 0) {
+            val iter = fragments.entries.iterator()
+            while (iter.hasNext()) {
+                val entry = iter.next()
+                if (entry.key > offset) break
+                if (entry.value.end >= offset) {
+                    fragInvalidate += 1
+                    iter.remove()
+                }
+            }
+            if (offset >= nextPos && offset <= finalPos) {
+                finger = nextPos
+                throw InterruptedFragmentException()
             }
         }
     }
