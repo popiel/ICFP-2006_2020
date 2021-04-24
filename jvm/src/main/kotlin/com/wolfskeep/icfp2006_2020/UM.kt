@@ -73,16 +73,12 @@ interface Fragment {
     fun run(um: UM, registers: IntArray)
 }
 
-abstract class Operation(val operation: Int, touched: Array<RegOut>): StackManipulation {
+abstract class Operation(val operation: Int): StackManipulation {
     inline val code get() = operation ushr 28
     inline val a get() = operation shr 6 and 7
     inline val b get() = operation shr 3 and 7
     inline val c get() = operation shr 0 and 7
     inline val d get() = operation shr 25 and 7
-
-    val A = touched[a]
-    val B = touched[b]
-    val C = touched[c]
 
     override fun isValid() = true
 
@@ -104,6 +100,29 @@ abstract class Operation(val operation: Int, touched: Array<RegOut>): StackManip
     }
 
     companion object {
+        fun from(operation: Int, touched: Array<RegOut>, pos: Int): Operation {
+            val a = operation shr 6 and 7
+            val b = operation shr 3 and 7
+            val c = operation shr 0 and 7
+            val d = operation shr 25 and 7
+            return when (operation ushr 28) {
+                0 -> IF(operation, touched[c], touched[a], touched[b]).also { touched[a] = it }
+                1 -> LOAD(operation, touched[b], touched[c]).also { touched[a] = it }
+                2 -> STORE(operation, touched[a], touched[b], touched[c], pos)
+                3 -> ADD(operation, touched[b], touched[c]).also { touched[a] = it }
+                4 -> MUL(operation, touched[b], touched[c]).also { touched[a] = it }
+                5 -> DIV(operation, touched[b], touched[c]).also { touched[a] = it }
+                6 -> NAND(operation, touched[b], touched[c]).also { touched[a] = it }
+                7 -> EXIT
+                8 -> NEW(operation, touched[c]).also { touched[b] = it }
+                9 -> FREE(operation, touched[c])
+                10 -> OUTPUT(operation, touched[c])
+                11 -> INPUT(operation).also { touched[c] = it }
+                12 -> JUMP(operation, touched[b], touched[c])
+                13 -> CONST(operation).also { touched[d] = it }
+                else -> throw IllegalArgumentException()
+            }
+        }
         fun invokeUMMethod(name: String, vararg args: StackManipulation): StackManipulation {
             val method = MethodDescription.ForLoadedMethod(UM::class.java.getMethod(name, *Array<Class<*>>(args.size) { Int::class.java }))
             return StackManipulation.Compound(
@@ -137,16 +156,7 @@ abstract class Operation(val operation: Int, touched: Array<RegOut>): StackManip
     }
 }
 
-abstract class RegOut(operation: Int, touched: Array<RegOut>): Operation(operation, touched) {
-    val regOut = when (code) {
-        0, 1, 3, 4, 5, 6 -> a
-        8 -> b
-        11 -> c
-        13 -> d
-        else -> throw IllegalArgumentException()
-    }
-    init { touched[regOut] = this }
-
+abstract class RegOut(operation: Int): Operation(operation) {
     var exposed = false
     var refCount = 0
     var scopeStart: Label? = null
@@ -154,12 +164,6 @@ abstract class RegOut(operation: Int, touched: Array<RegOut>): Operation(operati
 
     open fun canBeZero(): Boolean = true
     open fun possibleValues(): Set<Int>? = null
-}
-
-object JunkReg: RegOut(-1, Array<RegOut>(8) { JunkReg }) {
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return StackManipulation.Trivial.INSTANCE.apply(mv, context)
-    }
 }
 
 class SetLabel(val label: Label): StackManipulation {
@@ -272,32 +276,28 @@ object Dup_x2: StackManipulation {
     }
 }
 
-class GET(val which: Int, touched: Array<RegOut>): RegOut(-1, touched) {
+class GET(val which: Int): RegOut(-1) {
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         return StackManipulation.Compound(
             getRegister(which),
-            MethodVariableAccess.INTEGER.storeAt(which + 1)
+            MethodVariableAccess.INTEGER.storeAt(which + 3)
         ).apply(mv, context)
     }
 }
 
-class PUT(val which: Int, touched: Array<RegOut>): Operation(-1, touched) {
-    init { if (!(touched[which] is GET)) touched[which].refCount += 1 }
+class PUT(val which: Int, val source: RegOut): Operation(-1) {
+    init { if (!(source is GET)) source.refCount += 1 }
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(which, MethodVariableAccess.INTEGER.loadFrom(which + 1))
+        return setRegister(which, MethodVariableAccess.INTEGER.loadFrom(which + 3))
             .apply(mv, context)
     }
 }
 
-class IF(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
-    val test = C
-    val zero = if (test?.canBeZero() ?: true) A else null
-    val nonzero = if (test?.possibleValues() != setOf(0)) B else null
-
+class IF(operation: Int, val test: RegOut, val zero: RegOut, val nonzero: RegOut): RegOut(operation) {
     init {
-        zero?.let { it.refCount += 1 }
-        nonzero?.let { it.refCount += 1 }
-        test?.let { it.refCount += 1 }
+        zero.refCount += 1
+        nonzero.refCount += 1
+        test.refCount += 1
     }
 
     override fun possibleValues() =
@@ -320,13 +320,11 @@ class IF(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
     }
 }
 
-class LOAD(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
-    val array = B
-    val offset = C
+class LOAD(operation: Int, val array: RegOut, val offset: RegOut): RegOut(operation) {
 
     init {
-        array?.let { it.refCount += 1 }
-        offset?.let { it.refCount += 1 }
+        array.refCount += 1
+        offset.refCount += 1
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
@@ -340,18 +338,14 @@ class LOAD(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
     }
 }
 
-class STORE(operation: Int, touched: Array<RegOut>, val nextPos: Int): Operation(operation, touched) {
-    val array = A
-    val offset = B
-    val value = C
-
-    val exposes = touched.clone()
+class STORE(operation: Int, val array: RegOut, val offset: RegOut, val value: RegOut, val nextPos: Int): Operation(operation) {
+    // val exposes = touched.clone()
     var finalPos: Int = -1
 
     init {
-        array?.let { it.refCount += 1 }
-        offset?.let { it.refCount += 1 }
-        value?.let { it.refCount += 1 }
+        array.refCount += 1
+        offset.refCount += 1
+        value.refCount += 1
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
@@ -366,13 +360,10 @@ class STORE(operation: Int, touched: Array<RegOut>, val nextPos: Int): Operation
     }
 }
 
-class ADD(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
-    val left = B
-    val right = C
-
+class ADD(operation: Int, val left: RegOut, val right: RegOut): RegOut(operation) {
     init {
-        left?.let { it.refCount += 1 }
-        right?.let { it.refCount += 1 }
+        left.refCount += 1
+        right.refCount += 1
     }
 
     override fun possibleValues() = right?.possibleValues()?.let { left?.possibleValues()?.flatMap { l -> it.map { r -> l + r } } }?.toSet()
@@ -387,13 +378,10 @@ class ADD(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
     }
 }
 
-class MUL(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
-    val left = B
-    val right = C
-
+class MUL(operation: Int, val left: RegOut, val right: RegOut): RegOut(operation) {
     init {
-        left?.let { it.refCount += 1 }
-        right?.let { it.refCount += 1 }
+        left.refCount += 1
+        right.refCount += 1
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
@@ -405,13 +393,10 @@ class MUL(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
     }
 }
 
-class DIV(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
-    val left = B
-    val right = C
-
+class DIV(operation: Int, val left: RegOut, val right: RegOut): RegOut(operation) {
     init {
-        left?.let { it.refCount += 1 }
-        right?.let { it.refCount += 1 }
+        left.refCount += 1
+        right.refCount += 1
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
@@ -425,13 +410,10 @@ class DIV(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
     }
 }
 
-class NAND(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
-    val left = B
-    val right = C
-
+class NAND(operation: Int, val left: RegOut, val right: RegOut): RegOut(operation) {
     init {
-        left?.let { it.refCount += 1 }
-        right?.let { it.refCount += 1 }
+        left.refCount += 1
+        right.refCount += 1
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
@@ -443,18 +425,15 @@ class NAND(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
     }
 }
 
-object EXIT: Operation(0, Array<RegOut>(8) { JunkReg }) {
-
+object EXIT: Operation(7 shl 28) {
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         return cleanExit.apply(mv, context)
     }
 }
 
-class NEW(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
-    val size = C
-
+class NEW(operation: Int, val size: RegOut): RegOut(operation) {
     init {
-        size?.let { it.refCount += 1 }
+        size.refCount += 1
     }
 
     override fun canBeZero() = false
@@ -464,11 +443,9 @@ class NEW(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
     }
 }
 
-class FREE(operation: Int, touched: Array<RegOut>): Operation(operation, touched) {
-    val array = C
-
+class FREE(operation: Int, val array: RegOut): Operation(operation) {
     init {
-        array?.let { it.refCount += 1 }
+        array.refCount += 1
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
@@ -476,11 +453,9 @@ class FREE(operation: Int, touched: Array<RegOut>): Operation(operation, touched
     }
 }
 
-class OUTPUT(operation: Int, touched: Array<RegOut>): Operation(operation, touched) {
-    val value = C
-
+class OUTPUT(operation: Int, val value: RegOut): Operation(operation) {
     init {
-        value?.let { it.refCount += 1 }
+        value.refCount += 1
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
@@ -488,9 +463,7 @@ class OUTPUT(operation: Int, touched: Array<RegOut>): Operation(operation, touch
     }
 }
 
-class INPUT(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
-    val exposes = touched.clone()
-
+class INPUT(operation: Int): RegOut(operation) {
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         return StackManipulation.Compound(
             setRegister(c, input)
@@ -498,15 +471,10 @@ class INPUT(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) 
     }
 }
 
-class JUMP(operation: Int, touched: Array<RegOut>): Operation(operation, touched) {
-    val array = B
-    val offset = C
-
-    val exposes = touched.clone()
-
+class JUMP(operation: Int, val array: RegOut, val offset: RegOut): Operation(operation) {
     init {
-        array?.let { it.refCount += 1 }
-        offset?.let { it.refCount += 1 }
+        array.refCount += 1
+        offset.refCount += 1
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
@@ -526,7 +494,7 @@ class JUMP(operation: Int, touched: Array<RegOut>): Operation(operation, touched
     }
 }
 
-class CONST(operation: Int, touched: Array<RegOut>): RegOut(operation, touched) {
+class CONST(operation: Int): RegOut(operation) {
     override fun canBeZero() = (operation and 0x1ffffff) == 0
     override fun possibleValues() = setOf(operation and 0x1ffffff)
 
@@ -567,32 +535,19 @@ fun compileFragment(um: UM): Fragment {
     val writtenTo = BooleanArray(8) { false }
     val code = mutableListOf<Operation>()
     var pos = um.finger
-    val touched = Array<RegOut>(8) { JunkReg }
-    // code += (0..7).map { GET(it, touched) }
+    val touched = (0..7).map { GET(it) }.toTypedArray<RegOut>()
+    // code += touched
     decode@
     while (true) {
         val operation = a0[pos]
         System.err.println("$pos: ${decode(operation)}")
         pos += 1
-        when (operation ushr 28) {
-            0 -> code += IF(operation, touched)
-            1 -> code += LOAD(operation, touched)
-            2 -> code += STORE(operation, touched, pos)
-            3 -> code += ADD(operation, touched)
-            4 -> code += MUL(operation, touched)
-            5 -> code += DIV(operation, touched)
-            6 -> code += NAND(operation, touched)
-            7 -> { code += EXIT; break@decode }
-            8 -> code += NEW(operation, touched)
-            9 -> code += FREE(operation, touched)
-            10 -> code += OUTPUT(operation, touched)
-            11 -> code += INPUT(operation, touched)
-            12 -> { code += JUMP(operation, touched); break@decode }
-            13 -> code += CONST(operation, touched)
-            else -> throw IllegalArgumentException()
-        }
+        code += Operation.from(operation, touched, pos)
+        val op = operation ushr 28
+        if (op == 7 || op == 12) break@decode
     }
 
+    /*
     code.forEach { when (it) {
         is STORE -> {
             it.finalPos = pos
@@ -604,6 +559,7 @@ fun compileFragment(um: UM): Fragment {
         is INPUT -> it.exposes.forEach { it?.exposed = true }
         is JUMP -> it.exposes.forEach { it?.exposed = true }
     } }
+    */
 
     return assembleFragment(code, pos, um)
 }
