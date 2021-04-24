@@ -370,11 +370,11 @@ class ADD(operation: Int, val left: RegOut, val right: RegOut): RegOut(operation
     override fun canBeZero() = possibleValues()?.contains(0) ?: true
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return StackManipulation.Compound(
+        return setRegister(a, StackManipulation.Compound(
             getRegister(b),
             getRegister(c),
-            setRegister(a, Addition.INTEGER)
-        ).apply(mv, context)
+            Addition.INTEGER
+        )).apply(mv, context)
     }
 }
 
@@ -385,11 +385,11 @@ class MUL(operation: Int, val left: RegOut, val right: RegOut): RegOut(operation
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return StackManipulation.Compound(
+        return setRegister(a, StackManipulation.Compound(
             getRegister(b),
             getRegister(c),
-            setRegister(a, Multiplication.INTEGER)
-        ).apply(mv, context)
+            Multiplication.INTEGER
+        )).apply(mv, context)
     }
 }
 
@@ -400,13 +400,13 @@ class DIV(operation: Int, val left: RegOut, val right: RegOut): RegOut(operation
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return StackManipulation.Compound(
+        return setRegister(a, StackManipulation.Compound(
             getRegister(b),
             UInt2Long,
             getRegister(c),
             UInt2Long,
-            setRegister(a, DivideLong2UInt)
-        ).apply(mv, context)
+            DivideLong2UInt
+        )).apply(mv, context)
     }
 }
 
@@ -417,11 +417,11 @@ class NAND(operation: Int, val left: RegOut, val right: RegOut): RegOut(operatio
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return StackManipulation.Compound(
+        return setRegister(a, StackManipulation.Compound(
             getRegister(b),
             getRegister(c),
-            setRegister(a, NotAnd)
-        ).apply(mv, context)
+            NotAnd
+        )).apply(mv, context)
     }
 }
 
@@ -465,9 +465,7 @@ class OUTPUT(operation: Int, val value: RegOut): Operation(operation) {
 
 class INPUT(operation: Int): RegOut(operation) {
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return StackManipulation.Compound(
-            setRegister(c, input)
-        ).apply(mv, context)
+        return setRegister(c, input).apply(mv, context)
     }
 }
 
