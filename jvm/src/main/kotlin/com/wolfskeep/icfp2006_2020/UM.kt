@@ -427,7 +427,8 @@ class NAND(operation: Int, val left: RegOut, val right: RegOut): RegOut(operatio
 
 object EXIT: Operation(7 shl 28) {
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return cleanExit.apply(mv, context)
+        // return cleanExit.apply(mv, context)
+        return StackManipulation.Trivial.INSTANCE.apply(mv, context)
     }
 }
 
@@ -460,6 +461,7 @@ class OUTPUT(operation: Int, val value: RegOut): Operation(operation) {
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         return output(getRegister(c)).apply(mv, context)
+        // return StackManipulation.Trivial.INSTANCE.apply(mv, context)
     }
 }
 
@@ -628,6 +630,8 @@ class UM(
     var fragRun = 0L
     var fragInvalidate = 0L
 
+    var running = true
+
     var A: Int
         inline get() = registers[(operator shr 6) and 7]
         inline set(value) { registers[(operator shr 6) and 7] = value }
@@ -760,7 +764,10 @@ class UM(
     }
 
     fun cleanExit() {
-        throw CleanExitException()
+        if (running) {
+            Thread.sleep(60000)
+            //throw CleanExitException()
+        }
     }
 
     fun allocate(size: Int): Int {
@@ -795,10 +802,14 @@ class UM(
     }
 
     fun output(what: Int) {
+        System.out.write(what)
+        System.out.flush()
+        /*
         terminalOut!!.write(what)
         outBuffer[outPos] = what.toByte()
         outPos = (outPos + 1) % outBuffer.size
         terminalOut!!.flush()
+        */
     }
 
     fun dumpState() {
