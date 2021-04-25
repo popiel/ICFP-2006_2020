@@ -427,8 +427,10 @@ class NAND(operation: Int, val left: RegOut, val right: RegOut): RegOut(operatio
 
 object EXIT: Operation(7 shl 28) {
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        // return cleanExit.apply(mv, context)
-        return StackManipulation.Trivial.INSTANCE.apply(mv, context)
+        return StackManipulation.Compound(
+            cleanExit,
+            MethodReturn.VOID
+        ).apply(mv, context)
     }
 }
 
@@ -574,7 +576,7 @@ fun assembleFragment(code: List<Operation>, finalPos: Int, um: UM): Fragment {
     locals.forEachIndexed { index, op -> (op as RegOut).tmpIndex = index + 2 }
     */
 
-    return ByteBuddy()
+    val thang = ByteBuddy()
             .subclass(Fragment::class.java)
             .method(named("getStart")).intercept(FixedValue.value(um.finger))
             .method(named("getEnd")).intercept(FixedValue.value(finalPos))
@@ -593,8 +595,9 @@ fun assembleFragment(code: List<Operation>, finalPos: Int, um: UM): Fragment {
             })
             .make()
             .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
-            .getLoaded()
-            .newInstance()
+    val map = thang.saveIn(File("classDump"))
+    map.forEach { (k, v) -> println("Assembled: $k: $v") }
+    return thang.getLoaded().newInstance()
 }
 
 class InterruptedFragmentException(): RuntimeException()
@@ -764,10 +767,7 @@ class UM(
     }
 
     fun cleanExit() {
-        if (running) {
-            Thread.sleep(60000)
-            //throw CleanExitException()
-        }
+        throw CleanExitException()
     }
 
     fun allocate(size: Int): Int {
@@ -802,14 +802,10 @@ class UM(
     }
 
     fun output(what: Int) {
-        System.out.write(what)
-        System.out.flush()
-        /*
         terminalOut!!.write(what)
         outBuffer[outPos] = what.toByte()
         outPos = (outPos + 1) % outBuffer.size
         terminalOut!!.flush()
-        */
     }
 
     fun dumpState() {
