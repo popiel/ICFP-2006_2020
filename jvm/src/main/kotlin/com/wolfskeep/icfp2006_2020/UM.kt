@@ -82,7 +82,7 @@ abstract class Operation(val operation: Int): StackManipulation {
 
     override fun isValid() = true
 
-    fun getRegister(which: Int): StackManipulation {
+    fun getRegisterReal(which: Int): StackManipulation {
         return StackManipulation.Compound(
                 getRegisters,
                 IntegerConstant.forValue(which),
@@ -90,7 +90,7 @@ abstract class Operation(val operation: Int): StackManipulation {
         )
     }
 
-    fun setRegister(which: Int, value: StackManipulation): StackManipulation {
+    fun setRegisterReal(which: Int, value: StackManipulation): StackManipulation {
         return StackManipulation.Compound(
             getRegisters,
             IntegerConstant.forValue(which),
@@ -99,27 +99,39 @@ abstract class Operation(val operation: Int): StackManipulation {
         )
     }
 
+    fun getRegister(which: Int): StackManipulation {
+        return MethodVariableAccess.INTEGER.loadFrom(which + 3)
+    }
+
+    fun setRegister(which: Int, value: StackManipulation): StackManipulation {
+        return StackManipulation.Compound(
+            value,
+            MethodVariableAccess.INTEGER.storeAt(which + 3)
+        )
+    }
+
     companion object {
-        fun from(operation: Int, touched: Array<RegOut>, pos: Int): Operation {
+        fun from(operation: Int, touched: Array<RegOut>, pos: Int): List<Operation> {
             val a = operation shr 6 and 7
             val b = operation shr 3 and 7
             val c = operation shr 0 and 7
             val d = operation shr 25 and 7
+            fun save() = touched.mapIndexedNotNull { n, r -> if ((r is GET) && r.which == n) null else PUT(n, r) }
             return when (operation ushr 28) {
-                0 -> IF(operation, touched[c], touched[a], touched[b]).also { touched[a] = it }
-                1 -> LOAD(operation, touched[b], touched[c]).also { touched[a] = it }
-                2 -> STORE(operation, touched[a], touched[b], touched[c], pos)
-                3 -> ADD(operation, touched[b], touched[c]).also { touched[a] = it }
-                4 -> MUL(operation, touched[b], touched[c]).also { touched[a] = it }
-                5 -> DIV(operation, touched[b], touched[c]).also { touched[a] = it }
-                6 -> NAND(operation, touched[b], touched[c]).also { touched[a] = it }
-                7 -> EXIT
-                8 -> NEW(operation, touched[c]).also { touched[b] = it }
-                9 -> FREE(operation, touched[c])
-                10 -> OUTPUT(operation, touched[c])
-                11 -> INPUT(operation).also { touched[c] = it }
-                12 -> JUMP(operation, touched[b], touched[c])
-                13 -> CONST(operation).also { touched[d] = it }
+                0 -> listOf(IF(operation, touched[c], touched[a], touched[b]).also { touched[a] = it })
+                1 -> listOf(LOAD(operation, touched[b], touched[c]).also { touched[a] = it })
+                2 -> (if (touched[a].canBeZero()) save() else listOf()) + STORE(operation, touched[a], touched[b], touched[c], pos)
+                3 -> listOf(ADD(operation, touched[b], touched[c]).also { touched[a] = it })
+                4 -> listOf(MUL(operation, touched[b], touched[c]).also { touched[a] = it })
+                5 -> listOf(DIV(operation, touched[b], touched[c]).also { touched[a] = it })
+                6 -> listOf(NAND(operation, touched[b], touched[c]).also { touched[a] = it })
+                7 -> listOf(EXIT)
+                8 -> listOf(NEW(operation, touched[c]).also { touched[b] = it })
+                9 -> listOf(FREE(operation, touched[c]))
+                10 -> listOf(OUTPUT(operation, touched[c]))
+                11 -> save() + INPUT(operation).also { touched[c] = it }
+                12 -> save() + JUMP(operation, touched[b], touched[c])
+                13 -> listOf(CONST(operation).also { touched[d] = it })
                 else -> throw IllegalArgumentException()
             }
         }
@@ -159,8 +171,6 @@ abstract class Operation(val operation: Int): StackManipulation {
 abstract class RegOut(operation: Int): Operation(operation) {
     var exposed = false
     var refCount = 0
-    var scopeStart: Label? = null
-    var scopeEnd: Label? = null
 
     open fun canBeZero(): Boolean = true
     open fun possibleValues(): Set<Int>? = null
@@ -170,7 +180,7 @@ class SetLabel(val label: Label): StackManipulation {
     override fun isValid() = true
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         mv.visitLabel(label)
-        mv.visitFrame(F_SAME, 2, arrayOf("Lcom/wolfskeep/icfp2006_2020/UM;", "[I"), 0, arrayOf())
+        mv.visitFrame(F_FULL, 11, arrayOf("com/wolfskeep/icfp2006_2020/Fragment", "com/wolfskeep/icfp2006_2020/UM", "[I", Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER), 0, arrayOf())
         return StackManipulation.Size(0, 0)
     }
 }
@@ -276,20 +286,16 @@ object Dup_x2: StackManipulation {
     }
 }
 
-class GET(val which: Int): RegOut(-1) {
+data class GET(val which: Int): RegOut(-1) {
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return StackManipulation.Compound(
-            getRegister(which),
-            MethodVariableAccess.INTEGER.storeAt(which + 3)
-        ).apply(mv, context)
+        return setRegister(which, getRegisterReal(which)).apply(mv, context)
     }
 }
 
 class PUT(val which: Int, val source: RegOut): Operation(-1) {
-    init { if (!(source is GET)) source.refCount += 1 }
+    init { if (!((source is GET) && source.which == which)) source.refCount += 1 }
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(which, MethodVariableAccess.INTEGER.loadFrom(which + 3))
-            .apply(mv, context)
+        return setRegisterReal(which, getRegister(which)).apply(mv, context)
     }
 }
 
@@ -531,14 +537,10 @@ fun decode(operator: Int): String {
 
 fun compileFragment(um: UM): Fragment {
     val a0 = um.arrays[0]
-    val canBeZero = BooleanArray(8) { true }
-    val possibleValues = Array<Set<Int>?>(8) { null }
-    val readFrom = BooleanArray(8) { false }
-    val writtenTo = BooleanArray(8) { false }
     val code = mutableListOf<Operation>()
     var pos = um.finger
     val touched = (0..7).map { GET(it) }.toTypedArray<RegOut>()
-    // code += touched
+    code += touched
     decode@
     while (true) {
         val operation = a0[pos]
@@ -587,7 +589,7 @@ fun assembleFragment(code: List<Operation>, finalPos: Int, um: UM): Fragment {
                         override fun apply(mv: MethodVisitor, context: Implementation.Context, method: MethodDescription): ByteCodeAppender.Size {
                             return ByteCodeAppender.Size(
                                     code.fold(0) { acc, op -> Math.max(acc, op.apply(mv, context).getMaximalSize()) },
-                                    3 /* locals.size + 3 */
+                                    11 /* locals.size + 3 */
                             )
                         }
                     }
