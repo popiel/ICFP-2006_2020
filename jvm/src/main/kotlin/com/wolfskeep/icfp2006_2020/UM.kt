@@ -328,13 +328,13 @@ class LOAD(operation: Int, val array: RegOut, val offset: RegOut): RegOut(operat
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return StackManipulation.Compound(
+        return setRegister(a, StackManipulation.Compound(
             getArrays,
             getRegister(b),
             arrayList_get,
             getRegister(c),
-            setRegister(a, ArrayAccess.INTEGER.load())
-        ).apply(mv, context)
+            ArrayAccess.INTEGER.load()
+        )).apply(mv, context)
     }
 }
 
@@ -542,7 +542,7 @@ fun compileFragment(um: UM): Fragment {
     decode@
     while (true) {
         val operation = a0[pos]
-        System.err.println("$pos: ${decode(operation)}")
+        //System.err.println("$pos: ${decode(operation)}")
         pos += 1
         code += Operation.from(operation, touched, pos)
         val op = operation ushr 28
@@ -596,7 +596,7 @@ fun assembleFragment(code: List<Operation>, finalPos: Int, um: UM): Fragment {
             .make()
             .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
     val map = thang.saveIn(File("classDump"))
-    map.forEach { (k, v) -> println("Assembled: $k: $v") }
+    //map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
     return thang.getLoaded().newInstance()
 }
 
@@ -664,7 +664,7 @@ class UM(
 
             try {
                 while (true) {
-                    System.err.println("TRACE: Starting fragment at $finger with [${registers.joinToString(", ") { it.toString() }}]")
+                    //System.err.println("TRACE: Starting fragment at $finger with [${registers.joinToString(", ") { it.toString() }}]")
                     fragLookup += 1
                     val fragment = fragments.computeIfAbsent(finger) {
                         fragCompile += 1
@@ -749,7 +749,7 @@ class UM(
 
     fun clearCorruptedFragments(array: Int, offset: Int, value: Int, nextPos: Int, finalPos: Int) {
         if (array == 0) {
-            System.err.println("TRACE: Setting $array[$offset] = $value")
+            //System.err.println("TRACE: Setting $array[$offset] = $value")
             val iter = fragments.entries.iterator()
             while (iter.hasNext()) {
                 val entry = iter.next()
