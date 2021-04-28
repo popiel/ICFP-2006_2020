@@ -106,13 +106,16 @@ abstract class Operation(val operation: Int): StackManipulation {
             val c = operation shr 0 and 7
             val d = operation shr 25 and 7
             return when (operation ushr 28) {
-                0 -> IF(operation, touched[c], touched[a], touched[b]).also { touched[a] = it }
+                0 -> if (touched[c].possibleValues() == setOf(0)) NOP
+                    else if (!touched[c].canBeZero()) MOVE(operation, touched[b]).also { touched[a] = it }
+                    else IF(operation, touched[c], touched[a], touched[b]).also { touched[a] = it }
                 1 -> LOAD(operation, touched[b], touched[c]).also { touched[a] = it }
                 2 -> STORE(operation, touched[a], touched[b], touched[c], pos)
                 3 -> ADD(operation, touched[b], touched[c]).also { touched[a] = it }
                 4 -> MUL(operation, touched[b], touched[c]).also { touched[a] = it }
                 5 -> DIV(operation, touched[b], touched[c]).also { touched[a] = it }
-                6 -> NAND(operation, touched[b], touched[c]).also { touched[a] = it }
+                6 -> if (b != c) NAND(operation, touched[b], touched[c]).also { touched[a] = it }
+                    else NOTOP(operation, touched[b]).also { touched[a] = it }
                 7 -> EXIT
                 8 -> NEW(operation, touched[c]).also { touched[b] = it }
                 9 -> FREE(operation, touched[c])
@@ -142,8 +145,8 @@ abstract class Operation(val operation: Int): StackManipulation {
         fun free(which: StackManipulation) = invokeUMMethod("free", which)
         val input = invokeUMMethod("input")
         fun output(what: StackManipulation) = invokeUMMethod("output", what)
-        fun clearCorruptedFragments(array: StackManipulation, offset: StackManipulation, value: StackManipulation, nextPos: Int, finalPos: Int) =
-            invokeUMMethod("clearCorruptedFragments", array, offset, value, IntegerConstant.forValue(nextPos), IntegerConstant.forValue(finalPos))
+        fun clearCorruptedFragments(offset: StackManipulation, nextPos: Int, finalPos: Int) =
+            invokeUMMethod("clearCorruptedFragments", offset, IntegerConstant.forValue(nextPos), IntegerConstant.forValue(finalPos))
         fun doIfAssign(a: StackManipulation, b: StackManipulation, c: StackManipulation) = invokeUMMethod("doIfAssign", a, b, c)
         fun doCloneArray(which: StackManipulation) = invokeUMMethod("doCloneArray", which)
 
@@ -166,11 +169,15 @@ abstract class RegOut(operation: Int): Operation(operation) {
     open fun possibleValues(): Set<Int>? = null
 }
 
-class SetLabel(val label: Label): StackManipulation {
+class SetLabel(val label: Label, val stackSize: Int = 0): StackManipulation {
     override fun isValid() = true
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         mv.visitLabel(label)
-        mv.visitFrame(F_SAME, 2, arrayOf("Lcom/wolfskeep/icfp2006_2020/UM;", "[I"), 0, arrayOf())
+        when (stackSize) {
+            0 -> mv.visitFrame(F_SAME, 0, arrayOf(), 0, arrayOf())
+            1 -> mv.visitFrame(F_SAME1, 0, arrayOf(), 1, arrayOf(Opcodes.INTEGER))
+            else -> mv.visitFrame(F_FULL, 3, arrayOf("com/wolfskeep/icfp2006_2020/Fragment", "com/wolfskeep/icfp2006_2020/UM", "[I"), stackSize, Array<Object>(stackSize) { Opcodes.INTEGER as Object })
+        }
         return StackManipulation.Size(0, 0)
     }
 }
@@ -244,6 +251,15 @@ object NotAnd: StackManipulation {
     }
 }
 
+object Not: StackManipulation {
+    override fun isValid() = true
+    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
+        mv.visitInsn(ICONST_M1)
+        mv.visitInsn(IXOR)
+        return StackManipulation.Size(0, 1)
+    }
+}
+
 object Swap: StackManipulation {
     override fun isValid() = true
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
@@ -290,6 +306,25 @@ class PUT(val which: Int, val source: RegOut): Operation(-1) {
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         return setRegister(which, MethodVariableAccess.INTEGER.loadFrom(which + 3))
             .apply(mv, context)
+    }
+}
+
+object NOP: Operation(0) {
+    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
+        return StackManipulation.Trivial.INSTANCE.apply(mv, context)
+    }
+}
+
+class MOVE(operation: Int, val nonzero: RegOut): RegOut(operation) {
+    init {
+        nonzero.refCount += 1
+    }
+
+    override fun possibleValues() = nonzero.possibleValues()
+    override fun canBeZero() = nonzero.canBeZero()
+
+    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
+        return setRegister(a, getRegister(b)).apply(mv, context)
     }
 }
 
@@ -349,13 +384,23 @@ class STORE(operation: Int, val array: RegOut, val offset: RegOut, val value: Re
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
+        val check = Label()
+        val end = Label()
         return StackManipulation.Compound(
             getArrays,
             getRegister(a),
+            Dup_x1,
             arrayList_get,
             getRegister(b),
+            Dup_x2,
             getRegister(c),
-            ArrayAccess.INTEGER.store()
+            ArrayAccess.INTEGER.store(),
+            JumpIfNotZero(check),
+            clearCorruptedFragments(Swap, nextPos, finalPos),
+            JumpAlways(end),
+            SetLabel(check, 1),
+            Removal.SINGLE,
+            SetLabel(end)
         ).apply(mv, context)
     }
 }
@@ -421,6 +466,19 @@ class NAND(operation: Int, val left: RegOut, val right: RegOut): RegOut(operatio
             getRegister(b),
             getRegister(c),
             NotAnd
+        )).apply(mv, context)
+    }
+}
+
+class NOTOP(operation: Int, val right: RegOut): RegOut(operation) {
+    init {
+        right.refCount += 1
+    }
+
+    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
+        return setRegister(a, StackManipulation.Compound(
+            getRegister(b),
+            Not
         )).apply(mv, context)
     }
 }
@@ -595,7 +653,7 @@ fun assembleFragment(code: List<Operation>, finalPos: Int, um: UM): Fragment {
             })
             .make()
             .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
-    val map = thang.saveIn(File("classDump"))
+    //val map = thang.saveIn(File("classDump"))
     //map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
     return thang.getLoaded().newInstance()
 }
@@ -694,7 +752,7 @@ class UM(
                                 1 -> A = arrays[B][C]
                                 2 -> {
                                     arrays[A][B] = C
-                                    if (A == 0) clearCorruptedFragments(0, B, C, -1, -1)
+                                    if (A == 0) clearCorruptedFragments(B, -1, -1)
                                 }
                                 3 -> A = B + C
                                 4 -> A = (B.toUInt() * C.toUInt()).toInt()
@@ -747,22 +805,19 @@ class UM(
         }
     }
 
-    fun clearCorruptedFragments(array: Int, offset: Int, value: Int, nextPos: Int, finalPos: Int) {
-        if (array == 0) {
-            //System.err.println("TRACE: Setting $array[$offset] = $value")
-            val iter = fragments.entries.iterator()
-            while (iter.hasNext()) {
-                val entry = iter.next()
-                if (entry.key > offset) break
-                if (entry.value.end >= offset) {
-                    fragInvalidate += 1
-                    iter.remove()
-                }
+    fun clearCorruptedFragments(offset: Int, nextPos: Int, finalPos: Int) {
+        val iter = fragments.entries.iterator()
+        while (iter.hasNext()) {
+            val entry = iter.next()
+            if (entry.key > offset) break
+            if (entry.value.end >= offset) {
+                fragInvalidate += 1
+                iter.remove()
             }
-            if (offset >= nextPos && offset <= finalPos) {
-                finger = nextPos
-                throw InterruptedFragmentException()
-            }
+        }
+        if (offset >= nextPos && offset <= finalPos) {
+            finger = nextPos
+            throw InterruptedFragmentException()
         }
     }
 
