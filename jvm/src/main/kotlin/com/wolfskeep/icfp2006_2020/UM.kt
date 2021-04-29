@@ -606,6 +606,25 @@ fun compileFragment(um: UM): Fragment {
         val op = operation ushr 28
         if (op == 7 || op == 12) break@decode
     }
+    val last = code.last()
+    if (last is JUMP) {
+        if (last.offset.possibleValues() == null) {
+            println("===> possibly unknown jump target")
+            /*
+            println("---> Fragment:")
+            (um.finger until pos).forEach { p ->
+                System.err.println("$p: ${decode(a0[p])}")
+            }
+            */
+        }
+        if (last.offset.possibleValues()?.contains(pos) ?: false) {
+            println("===> conditional jump")
+            println("---> Fragment:")
+            (um.finger until pos).forEach { p ->
+                System.err.println("$p: ${decode(a0[p])}")
+            }
+        }
+    }
 
     /*
     code.forEach { when (it) {
@@ -810,13 +829,15 @@ class UM(
         while (iter.hasNext()) {
             val entry = iter.next()
             if (entry.key > offset) break
-            if (entry.value.end >= offset) {
+            if (entry.value.end > offset) {
                 fragInvalidate += 1
+                println("===> Invalidated ${entry.key}-${entry.value.end}")
                 iter.remove()
             }
         }
         if (offset >= nextPos && offset <= finalPos) {
             finger = nextPos
+            println("===> Interrupted at $nextPos")
             throw InterruptedFragmentException()
         }
     }
