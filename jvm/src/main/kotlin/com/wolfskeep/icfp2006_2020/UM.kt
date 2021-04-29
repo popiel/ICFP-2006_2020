@@ -106,9 +106,9 @@ abstract class Operation(val operation: Int): StackManipulation {
             val c = operation shr 0 and 7
             val d = operation shr 25 and 7
             return when (operation ushr 28) {
-                0 -> if (touched[c].possibleValues() == setOf(0)) NOP
+                0 -> /* if (touched[c].possibleValues() == setOf(0)) NOP
                     else if (!touched[c].canBeZero()) MOVE(operation, touched[b]).also { touched[a] = it }
-                    else IF(operation, touched[c], touched[a], touched[b]).also { touched[a] = it }
+                    else*/ IF(operation, touched[c], touched[a], touched[b]).also { touched[a] = it }
                 1 -> LOAD(operation, touched[b], touched[c]).also { touched[a] = it }
                 2 -> STORE(operation, touched[a], touched[b], touched[c], pos)
                 3 -> ADD(operation, touched[b], touched[c]).also { touched[a] = it }
@@ -121,7 +121,7 @@ abstract class Operation(val operation: Int): StackManipulation {
                 9 -> FREE(operation, touched[c])
                 10 -> OUTPUT(operation, touched[c])
                 11 -> INPUT(operation).also { touched[c] = it }
-                12 -> JUMP(operation, touched[b], touched[c])
+                12 -> JUMP(operation, touched[b], touched[c], pos)
                 13 -> CONST(operation).also { touched[d] = it }
                 else -> throw IllegalArgumentException()
             }
@@ -195,6 +195,14 @@ class JumpIfNotZero(val label: Label): StackManipulation {
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         mv.visitJumpInsn(IFNE, label)
         return StackManipulation.Size(-1, 0)
+    }
+}
+
+class JumpIfEqual(val label: Label): StackManipulation {
+    override fun isValid() = true
+    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
+        mv.visitJumpInsn(IF_ICMPEQ, label)
+        return StackManipulation.Size(-2, 0)
     }
 }
 
@@ -336,13 +344,9 @@ class IF(operation: Int, val test: RegOut, val zero: RegOut, val nonzero: RegOut
     }
 
     override fun possibleValues() =
-        if (test.possibleValues() == setOf(0)) zero?.possibleValues()
-        else if (test.canBeZero() == false) nonzero?.possibleValues()
-        else nonzero?.possibleValues()?.let { zero?.possibleValues()?.plus(it) }
+        nonzero?.possibleValues()?.let { zero?.possibleValues()?.plus(it) }
     override fun canBeZero() =
-        if (test?.possibleValues() == setOf(0)) zero?.canBeZero() ?: true
-        else if (test?.canBeZero() == false) nonzero?.canBeZero() ?: true
-        else !(zero?.canBeZero() == false && nonzero?.canBeZero() == false)
+        !(zero?.canBeZero() == false && nonzero?.canBeZero() == false)
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         val zeroLabel = Label()
@@ -531,22 +535,76 @@ class INPUT(operation: Int): RegOut(operation) {
     }
 }
 
-class JUMP(operation: Int, val array: RegOut, val offset: RegOut): Operation(operation) {
+class JUMP(operation: Int, val array: RegOut, val offset: RegOut, val nextPos: Int): Operation(operation) {
+    var labels: Map<Int, Label>? = null
     init {
         array.refCount += 1
         offset.refCount += 1
     }
 
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        val jump = StackManipulation.Compound(
+        val fingerReturn = StackManipulation.Compound(
             setFinger(getRegister(c)),
             MethodReturn.VOID
         )
+        val jump = labels?.let { labels -> 
+            val pv = offset.possibleValues()!!
+                StackManipulation.Compound(
+                    *(pv.flatMap { pos -> labels.get(pos)?.let { label ->
+                        listOf(
+                            getRegister(c),
+                            IntegerConstant.forValue(pos),
+                            JumpIfEqual(label)
+                        )
+                    } ?: listOf() }.toTypedArray()),
+                    fingerReturn
+                )
+            /*
+            if (pv == setOf(nextPos)) {
+                NOP
+            } else if (pv.size == 1) {
+                labels.get(pv.first())?.let {
+                    JumpAlways(it)
+                } ?: fingerReturn
+            } else if (pv.size == 2 && pv.contains(nextPos)) {
+                val other = pv.first { it != nextPos }
+                labels.get(other)?.let { label ->
+                    StackManipulation.Compound(
+                        getRegister(c),
+                        IntegerConstant.forValue(other),
+                        JumpIfEqual(label)
+                    )
+                } ?: StackManipulation.Compound(
+                    getRegister(c),
+                    IntegerConstant.forValue(nextPos),
+                    JumpIfEqual(labels[nextPos]!!),
+                    fingerReturn
+                )
+            } else {
+                StackManipulation.Compound(
+                    *(pv.flatMap { pos -> labels.get(pos)?.let { label ->
+                        listOf(
+                            getRegister(c),
+                            IntegerConstant.forValue(pos),
+                            JumpIfEqual(label)
+                        )
+                    } ?: listOf() }.toTypedArray()),
+                    fingerReturn
+                )
+            }
+            */
+        } ?: fingerReturn
+
         val check = if (array?.possibleValues() == setOf(0)) {
             jump
         } else {
+            val zero = Label()
             StackManipulation.Compound(
+                getRegister(b),
+                JumpIfZero(zero),
                 doCloneArray(getRegister(b)),
+                fingerReturn,
+                SetLabel(zero),
                 jump
             )
         }
@@ -597,62 +655,41 @@ fun compileFragment(um: UM): Fragment {
     var pos = um.finger
     val touched = (0..7).map { GET(it) }.toTypedArray<RegOut>()
     // code += touched
+    val targets = mutableSetOf<Int>()
+    val labels = mutableMapOf<Int, Label>()
     decode@
     while (true) {
         val operation = a0[pos]
         //System.err.println("$pos: ${decode(operation)}")
         pos += 1
-        code += Operation.from(operation, touched, pos)
+        val instruction = Operation.from(operation, touched, pos)
+        code += instruction
         val op = operation ushr 28
-        if (op == 7 || op == 12) break@decode
-    }
-    val last = code.last()
-    if (last is JUMP) {
-        if (last.offset.possibleValues() == null) {
-            println("===> possibly unknown jump target")
-            /*
-            println("---> Fragment:")
-            (um.finger until pos).forEach { p ->
-                System.err.println("$p: ${decode(a0[p])}")
-            }
-            */
-        }
-        if (last.offset.possibleValues()?.contains(pos) ?: false) {
-            println("===> conditional jump")
-            println("---> Fragment:")
-            (um.finger until pos).forEach { p ->
-                System.err.println("$p: ${decode(a0[p])}")
+        if (op == 12) {
+            val jump = instruction as JUMP
+            if (jump.array.canBeZero()) {
+                jump.offset.possibleValues()?.let {
+                    targets += it
+                    jump.labels = labels
+                }
             }
         }
+        if ((op == 7 || op == 12) && !(targets.contains(pos))) break@decode
     }
 
-    /*
-    code.forEach { when (it) {
-        is STORE -> {
-            it.finalPos = pos
-            if ((it.array?.canBeZero() ?: true) &&
-                    (it.offset?.possibleValues()?.intersect(um.finger until pos)?.isNotEmpty() ?: true)) {
-                it.exposes.forEach { it?.exposed = true }
-            }
-        }
-        is INPUT -> it.exposes.forEach { it?.exposed = true }
-        is JUMP -> it.exposes.forEach { it?.exposed = true }
-    } }
+//    System.err.println("===> Compiling ${um.finger}-$pos with targets ${targets.joinToString(", ")}")
+/*
+    if (um.finger >= 2250 && um.finger < 2300) {
+        (um.finger until pos).zip(code).forEach { (p, c) -> System.err.println("$p: ${decode(a0[p])} ${if (c is RegOut) c.possibleValues()?.joinToString(", ", "(", ")") ?: "" else ""}") }
+    }
     */
+    labels += targets.filter { it >= um.finger && it <= pos }.associateWith { Label() }
+    val augmented = (code + NOP).flatMapIndexed { off, c -> labels.get(off + um.finger)?.let { listOf(SetLabel(it), c) } ?: listOf(c) }
 
-    return assembleFragment(code, pos, um)
+    return assembleFragment(augmented, pos, um)
 }
 
-fun assembleFragment(code: List<Operation>, finalPos: Int, um: UM): Fragment {
-/*
-    val locals = code
-            .flatMap { it.toList() }
-            .filter { (it is RegOut) && it.refCount > 1 }
-            .distinct()
-
-    locals.forEachIndexed { index, op -> (op as RegOut).tmpIndex = index + 2 }
-    */
-
+fun assembleFragment(code: List<StackManipulation>, finalPos: Int, um: UM): Fragment {
     val thang = ByteBuddy()
             .subclass(Fragment::class.java)
             .method(named("getStart")).intercept(FixedValue.value(um.finger))
@@ -764,7 +801,7 @@ class UM(
                         while (true) {
                             operator = arrays[0][finger]
                             // println("finger: $finger  operator: ${java.lang.Integer.toHexString(operator)}")
-                            System.err.println(decode(operator))
+                            // System.err.println(decode(operator))
                             finger += 1
                             when (operator ushr 28) {
                                 0 -> if (C != 0) A = B
@@ -806,22 +843,22 @@ class UM(
                     }
                 }
             } catch (e: CleanExitException) {}
-            System.err.println("Fragments:")
-            System.err.println("  Lookup:     $fragLookup")
-            System.err.println("  Compile:    $fragCompile  (${fragCompile * 100 / fragLookup}%)")
-            System.err.println("  Failure:    $fragFailure  (${fragFailure * 100 / fragLookup}%)")
-            System.err.println("  Run:        $fragRun  (${fragRun * 100 / fragLookup}%)")
-            System.err.println("  Invalidate: $fragInvalidate")
+            finally {
+                System.err.println("Fragments:")
+                System.err.println("  Lookup:     $fragLookup")
+                System.err.println("  Compile:    $fragCompile  (${fragCompile * 100 / fragLookup}%)")
+                System.err.println("  Failure:    $fragFailure  (${fragFailure * 100 / fragLookup}%)")
+                System.err.println("  Run:        $fragRun  (${fragRun * 100 / fragLookup}%)")
+                System.err.println("  Invalidate: $fragInvalidate")
+            }
         }
     }
 
     fun doIfAssign(a: Int, b: Int, c: Int) = if (c == 0) a else b
 
     fun doCloneArray(which: Int) {
-        if (which != 0) {
-            fragments.clear()
-            arrays[0] = arrays[which].clone()
-        }
+        fragments.clear()
+        arrays[0] = arrays[which].clone()
     }
 
     fun clearCorruptedFragments(offset: Int, nextPos: Int, finalPos: Int) {
@@ -831,13 +868,13 @@ class UM(
             if (entry.key > offset) break
             if (entry.value.end > offset) {
                 fragInvalidate += 1
-                println("===> Invalidated ${entry.key}-${entry.value.end}")
+                // System.err.println("===> Invalidated ${entry.key}-${entry.value.end}")
                 iter.remove()
             }
         }
         if (offset >= nextPos && offset <= finalPos) {
             finger = nextPos
-            println("===> Interrupted at $nextPos")
+            // System.err.println("===> Interrupted at $nextPos")
             throw InterruptedFragmentException()
         }
     }
