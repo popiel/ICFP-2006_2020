@@ -612,6 +612,15 @@ class JUMP(operation: Int, val array: RegOut, val offset: RegOut, val nextPos: I
     }
 }
 
+class GOTO(val nextPos: Int): Operation(-1) {
+    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
+        return StackManipulation.Compound(
+            setFinger(IntegerConstant.forValue(nextPos)),
+            MethodReturn.VOID
+        ).apply(mv, context)
+    }
+}
+
 class CONST(operation: Int): RegOut(operation) {
     override fun canBeZero() = (operation and 0x1ffffff) == 0
     override fun possibleValues() = setOf(operation and 0x1ffffff)
@@ -674,7 +683,11 @@ fun compileFragment(um: UM): Fragment {
                 }
             }
         }
-        if ((op == 7 || op == 12) && !(targets.contains(pos))) break@decode
+        if ((op == 7 || op == 12) && !(targets.contains(pos) && pos < um.finger + 1000)) break@decode
+        if (pos > um.finger + 1500) {
+            code += GOTO(pos)
+            break@decode
+        }
     }
 
 //    System.err.println("===> Compiling ${um.finger}-$pos with targets ${targets.joinToString(", ")}")
@@ -683,14 +696,15 @@ fun compileFragment(um: UM): Fragment {
         (um.finger until pos).zip(code).forEach { (p, c) -> System.err.println("$p: ${decode(a0[p])} ${if (c is RegOut) c.possibleValues()?.joinToString(", ", "(", ")") ?: "" else ""}") }
     }
     */
-    labels += targets.filter { it >= um.finger && it <= pos }.associateWith { Label() }
-    val augmented = (code + NOP).flatMapIndexed { off, c -> labels.get(off + um.finger)?.let { listOf(SetLabel(it), c) } ?: listOf(c) }
+    labels += targets.filter { it >= um.finger && it < pos }.associateWith { Label() }
+    val augmented = code.flatMapIndexed { off, c -> labels.get(off + um.finger)?.let { listOf(SetLabel(it), c) } ?: listOf(c) }
 
     return assembleFragment(augmented, pos, um)
 }
 
 fun assembleFragment(code: List<StackManipulation>, finalPos: Int, um: UM): Fragment {
-    val thang = ByteBuddy()
+    try {
+        val thang = ByteBuddy()
             .subclass(Fragment::class.java)
             .method(named("getStart")).intercept(FixedValue.value(um.finger))
             .method(named("getEnd")).intercept(FixedValue.value(finalPos))
@@ -709,9 +723,13 @@ fun assembleFragment(code: List<StackManipulation>, finalPos: Int, um: UM): Frag
             })
             .make()
             .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
-    //val map = thang.saveIn(File("classDump"))
-    //map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
-    return thang.getLoaded().newInstance()
+        //val map = thang.saveIn(File("classDump"))
+        //map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
+        return thang.getLoaded().newInstance()
+    } catch (e: net.bytebuddy.jar.asm.MethodTooLargeException) {
+        System.err.println("method too large from ${um.finger}-$finalPos")
+        throw e
+    }
 }
 
 class InterruptedFragmentException(): RuntimeException()
