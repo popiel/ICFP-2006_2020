@@ -233,7 +233,7 @@ class Ref private constructor(
         else -> false
     }
 
-    fun build(inDepth: Int, inLocals: Int, remember: Boolean, labels: Map<Int, Label>, jumpLabel: Label): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
+    fun build(stack: Stack, inLocals: Int, remember: Boolean, labels: Map<Int, Label>, jumpLabel: Label): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
 
         fun buildExposes(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
             return exposes.foldIndexed(
@@ -241,7 +241,7 @@ class Ref private constructor(
             ) { n, a, f ->
                 if (f == fetches[n] || f == this) a
                 else {
-                   val (c, l, s) = f.build(inDepth, a.second, remember, labels, jumpLabel)
+                   val (c, l, s) = f.build(stack + "[I" + Opcodes.INTEGER, a.second, remember, labels, jumpLabel)
                    Triple(StackManipulation.Compound(a.first, setRegister(n, c)), l, a.third + s + 4)
                 }
             }
@@ -250,23 +250,23 @@ class Ref private constructor(
         fun buildIf(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
             val zero = Label()
             val end = Label()
-            val (cc, cl, cs) = c.build(inDepth, inLocals, remember, labels, jumpLabel)
-            val (ac, al, aS) = c.build(inDepth, cl, false, labels, jumpLabel)
-            val (bc, bl, bs) = c.build(inDepth, cl, false, labels, jumpLabel)
+            val (cc, cl, cs) = c.build(stack, inLocals, remember, labels, jumpLabel)
+            val (ac, al, aS) = c.build(stack, cl, false, labels, jumpLabel)
+            val (bc, bl, bs) = c.build(stack, cl, false, labels, jumpLabel)
             return Triple(StackManipulation.Compound(
                 cc,
                 JumpIfZero(zero),
                 bc,
                 JumpAlways(end),
-                SetLabel(zero, inDepth, cl),
+                SetLabel(zero, stack, cl),
                 ac,
-                SetLabel(end, inDepth, cl)
+                SetLabel(end, stack + Opcodes.INTEGER, cl)
             ), cl, aS + bs + cs + 6)
         }
 
         fun buildLoad(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (bc, bl, bs) = c.build(inDepth + 1, inLocals, remember, labels, jumpLabel)
-            val (cc, cl, cs) = c.build(inDepth + 1, bl, remember, labels, jumpLabel)
+            val (bc, bl, bs) = c.build(stack + "java/util/List", inLocals, remember, labels, jumpLabel)
+            val (cc, cl, cs) = c.build(stack + "[I", bl, remember, labels, jumpLabel)
             return Triple(StackManipulation.Compound(
                 getArrays,
                 bc,
@@ -292,14 +292,14 @@ class Ref private constructor(
                 JumpIfNotZero(check),
                 clearCorruptedFragments(Swap, nextPos),
                 IntegerConstant.forValue(0),
-                SetLabel(check, inDepth + 1, 3),
+                SetLabel(check, stack + Opcodes.INTEGER, 3),
                 Removal.SINGLE
             ), el, 38 + es)
         }
 
         fun buildAdd(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (bc, bl, bs) = c.build(inDepth, inLocals, remember, labels, jumpLabel)
-            val (cc, cl, cs) = c.build(inDepth + 1, bl, remember, labels, jumpLabel)
+            val (bc, bl, bs) = c.build(stack, inLocals, remember, labels, jumpLabel)
+            val (cc, cl, cs) = c.build(stack + Opcodes.INTEGER, bl, remember, labels, jumpLabel)
             return Triple(StackManipulation.Compound(
                 bc,
                 cc,
@@ -308,8 +308,8 @@ class Ref private constructor(
         }
 
         fun buildMul(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (bc, bl, bs) = c.build(inDepth, inLocals, remember, labels, jumpLabel)
-            val (cc, cl, cs) = c.build(inDepth + 1, bl, remember, labels, jumpLabel)
+            val (bc, bl, bs) = c.build(stack, inLocals, remember, labels, jumpLabel)
+            val (cc, cl, cs) = c.build(stack + Opcodes.INTEGER, bl, remember, labels, jumpLabel)
             return Triple(StackManipulation.Compound(
                 bc,
                 cc,
@@ -318,8 +318,8 @@ class Ref private constructor(
         }
 
         fun buildDiv(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (bc, bl, bs) = c.build(inDepth, inLocals, remember, labels, jumpLabel)
-            val (cc, cl, cs) = c.build(inDepth + 2, bl, remember, labels, jumpLabel)
+            val (bc, bl, bs) = c.build(stack, inLocals, remember, labels, jumpLabel)
+            val (cc, cl, cs) = c.build(stack + Opcodes.LONG, bl, remember, labels, jumpLabel)
             return Triple(StackManipulation.Compound(
                 bc,
                 UInt2Long,
@@ -330,8 +330,8 @@ class Ref private constructor(
         }
 
         fun buildNand(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (bc, bl, bs) = c.build(inDepth, inLocals, remember, labels, jumpLabel)
-            val (cc, cl, cs) = c.build(inDepth + 1, bl, remember, labels, jumpLabel)
+            val (bc, bl, bs) = c.build(stack, inLocals, remember, labels, jumpLabel)
+            val (cc, cl, cs) = c.build(stack + Opcodes.INTEGER, bl, remember, labels, jumpLabel)
             return Triple(StackManipulation.Compound(
                 bc,
                 cc,
@@ -347,17 +347,17 @@ class Ref private constructor(
         }
 
         fun buildNew(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (cc, cl, cs) = c.build(inDepth, inLocals, remember, labels, jumpLabel)
+            val (cc, cl, cs) = c.build(stack + "com/wolfskeep/icfp2006_2020/UM", inLocals, remember, labels, jumpLabel)
             return Triple(allocate(cc), cl, cs + 4)
         }
 
         fun buildFree(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (cc, cl, cs) = c.build(inDepth, inLocals, remember, labels, jumpLabel)
+            val (cc, cl, cs) = c.build(stack + "com/wolfskeep/icfp2006_2020/UM", inLocals, remember, labels, jumpLabel)
             return Triple(free(cc), cl, cs + 4)
         }
 
         fun buildOutput(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (cc, cl, cs) = c.build(inDepth, inLocals, remember, labels, jumpLabel)
+            val (cc, cl, cs) = c.build(stack + "com/wolfskeep/icfp2006_2020/UM", inLocals, remember, labels, jumpLabel)
             return Triple(output(cc), cl, cs + 4)
         }
 
@@ -393,7 +393,7 @@ class Ref private constructor(
                         doCloneArray(getRegister((op ushr 3) and 7)),
                         setFinger(getRegister(op and 7)),
                         MethodReturn.VOID,
-                        SetLabel(zero, 0, 3),
+                        SetLabel(zero, Stack.empty, 3),
                         jump
                     ),
                     el,
@@ -509,12 +509,16 @@ class Block(
     val refs = code.asList().subList(start, stop).mapIndexed { off, op ->
         Ref(start + off, op, touched)
     }
+    val canFallThrough = when (code[stop - 1] ushr 28) {
+        7, 12 -> false
+        else -> true
+    }
 
     val triple =
         refs
             .filter { it.hasSideEffects() }
             .fold(Triple(StackManipulation.Trivial.INSTANCE as StackManipulation, 3, 0)) { (ac, al, aS), f ->
-                val (bc, bl, bs) = f.build(0, al, true, labels, jumpLabel)
+                val (bc, bl, bs) = f.build(Stack.empty, al, true, labels, jumpLabel)
                 Triple(StackManipulation.Compound(ac, bc), bl, aS + bs)
             }
     val stackCode get() = triple.first
@@ -543,6 +547,7 @@ fun canBeZero(code: IntArray, start: Int, stop: Int, which: Int): Boolean {
                 else -> true
             }
         }
+        end -= 1
     }
     return true
 }
@@ -558,6 +563,7 @@ fun possibleValues(code: IntArray, start: Int, stop: Int, which: Int): Set<Int>?
                 else -> null
             }
         }
+        end -= 1
     }
     return null
 }
@@ -582,26 +588,31 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
                 else -> { /* NOTHING */ }
             }
         }
+        // System.err.println("Discovered $begin to $end")
     }
     val sorted = (targets.toList() + end).filter { it >= start && it <= end }.sorted()
     val jumpLabel = Label()
     val labels = TreeMap<Int, Label>()
     val blocks = sorted.windowed(2).map { (b, e) -> Block(code, b, e, labels, jumpLabel) }
     val sizes = blocks.map { it.size }.scan(20) { a, b -> a + b }
+    // System.err.println("Found ${blocks.size} blocks with total size ${sizes.last()}")
     val trimmed = if (sizes.last() < 60000) blocks else blocks.take(sizes.indexOfFirst { it > 60000 })
+    // System.err.println("Trimmed to ${trimmed.size} blocks with total size ${sizes[trimmed.size - 1]}")
     trimmed.map { it.start }.associateWithTo(labels) { Label() }
 
     val default = Label()
     val stackCode = StackManipulation.Compound(
         Ref.Companion.getFinger,
-        SetLabel(jumpLabel, 1, 3),
+        SetLabel(jumpLabel, Stack.empty + Opcodes.INTEGER, 3),
         Duplication.SINGLE,
         Ref.Companion.setFinger(Swap),
         LookupSwitch(default, labels),
-        *(trimmed.map { StackManipulation.Compound(SetLabel(labels[it.start]!!, 0, 3), it.stackCode) }.toTypedArray()),
-        Ref.Companion.setFinger(IntegerConstant.forValue(trimmed.last().stop)),
-        SetLabel(default, 0, 3),
-        // Ref.Companion.getFinger,
+        *(trimmed.map { StackManipulation.Compound(SetLabel(labels[it.start]!!, Stack.empty, 3), it.stackCode) }.toTypedArray()),
+        if (trimmed.last().canFallThrough)
+            Ref.Companion.setFinger(IntegerConstant.forValue(trimmed.last().stop))
+        else
+            StackManipulation.Trivial.INSTANCE,
+        SetLabel(default, Stack.empty, 3),
         MethodReturn.VOID
     )
     val maxLocals = trimmed.map { it.maxLocals }.max()
@@ -625,8 +636,8 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
             })
             .make()
             .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
-        //val map = thang.saveIn(File("classDump"))
-        //map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
+        // val map = thang.saveIn(File("classDump"))
+        // map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
         return Pair(thang.getLoaded().newInstance(), labels.keys)
     } catch (e: net.bytebuddy.jar.asm.MethodTooLargeException) {
         System.err.println("method too large from ${trimmed.first().start}-${trimmed.last().stop}")
@@ -634,18 +645,27 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
     }
 }
 
-class SetLabel(val label: Label, val stackSize: Int = 0, val localSize: Int = 3): StackManipulation {
+class Stack private constructor(val array: Array<Any>) {
+    val size get() = array.size
+    val children = HashMap<Any, Stack>()
+
+    operator fun plus(x: Any): Stack =
+        children.computeIfAbsent(x) {
+            val a = Arrays.copyOf(array, size + 1)
+            a[size] = x
+            Stack(a)
+        }
+
+    companion object {
+        val empty = Stack(arrayOf())
+    }
+}
+
+class SetLabel(val label: Label, val stack: Stack, val localSize: Int = 3): StackManipulation {
     override fun isValid() = true
     override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
         mv.visitLabel(label)
-        mv.visitFrame(F_FULL, localSize, locals[localSize], stackSize, stack[stackSize])
-        /*
-        when (stackSize) {
-            0 -> mv.visitFrame(F_SAME, 0, arrayOf(), 0, arrayOf())
-            1 -> mv.visitFrame(F_SAME1, 0, arrayOf(), 1, arrayOf(Opcodes.INTEGER))
-            else -> mv.visitFrame(F_FULL, 3, arrayOf("com/wolfskeep/icfp2006_2020/Fragment", "com/wolfskeep/icfp2006_2020/UM", "[I"), stackSize, Array<Object>(stackSize) { Opcodes.INTEGER as Object })
-        }
-        */
+        mv.visitFrame(F_NEW, localSize, locals[localSize], stack.size, stack.array)
         return StackManipulation.Size(0, 0)
     }
 
@@ -664,17 +684,6 @@ class SetLabel(val label: Label, val stackSize: Int = 0, val localSize: Int = 3)
             Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER
         )
         val locals = Array<Array<Any>>(localsBase.size + 1) { localsBase.take(it).toTypedArray() }
-        val stackBase = arrayOf<Any>(
-            Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER,
-            Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER,
-            Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER,
-            Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER,
-            Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER,
-            Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER,
-            Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER,
-            Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER, Opcodes.INTEGER
-        )
-        val stack = Array<Array<Any>>(stackBase.size + 1) { stackBase.take(it).toTypedArray() }
     }
 }
 
@@ -804,302 +813,6 @@ object Dup_x2: StackManipulation {
     }
 }
 
-class GET(val which: Int): RegOut(-1) {
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return StackManipulation.Compound(
-            getRegister(which),
-            MethodVariableAccess.INTEGER.storeAt(which + 3)
-        ).apply(mv, context)
-    }
-}
-
-class PUT(val which: Int, val source: RegOut): Operation(-1) {
-    init { if (!(source is GET)) source.refCount += 1 }
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(which, MethodVariableAccess.INTEGER.loadFrom(which + 3))
-            .apply(mv, context)
-    }
-}
-
-object NOP: Operation(0) {
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return StackManipulation.Trivial.INSTANCE.apply(mv, context)
-    }
-}
-
-class MOVE(operation: Int, val nonzero: RegOut): RegOut(operation) {
-    init {
-        nonzero.refCount += 1
-    }
-
-    override fun possibleValues() = nonzero.possibleValues()
-    override fun canBeZero() = nonzero.canBeZero()
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(a, getRegister(b)).apply(mv, context)
-    }
-}
-
-class IF(operation: Int, val test: RegOut, val zero: RegOut, val nonzero: RegOut): RegOut(operation) {
-    init {
-        zero.refCount += 1
-        nonzero.refCount += 1
-        test.refCount += 1
-    }
-
-    override fun possibleValues() =
-        nonzero?.possibleValues()?.let { zero?.possibleValues()?.plus(it) }
-    override fun canBeZero() =
-        !(zero?.canBeZero() == false && nonzero?.canBeZero() == false)
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        val zeroLabel = Label()
-        return StackManipulation.Compound(
-            getRegister(c),
-            JumpIfZero(zeroLabel),
-            setRegister(a, getRegister(b)),
-            SetLabel(zeroLabel)
-        ).apply(mv, context)
-    }
-}
-
-class LOAD(operation: Int, val array: RegOut, val offset: RegOut): RegOut(operation) {
-
-    init {
-        array.refCount += 1
-        offset.refCount += 1
-    }
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(a, StackManipulation.Compound(
-            getArrays,
-            getRegister(b),
-            arrayList_get,
-            getRegister(c),
-            ArrayAccess.INTEGER.load()
-        )).apply(mv, context)
-    }
-}
-
-class STORE(operation: Int, val array: RegOut, val offset: RegOut, val value: RegOut, val nextPos: Int): Operation(operation) {
-    // val exposes = touched.clone()
-    var finalPos: Int = -1
-
-    init {
-        array.refCount += 1
-        offset.refCount += 1
-        value.refCount += 1
-    }
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        val check = Label()
-        val end = Label()
-        return StackManipulation.Compound(
-            getArrays,
-            getRegister(a),
-            Dup_x1,
-            arrayList_get,
-            getRegister(b),
-            Dup_x2,
-            getRegister(c),
-            ArrayAccess.INTEGER.store(),
-            JumpIfNotZero(check),
-            clearCorruptedFragments(Swap, nextPos, finalPos),
-            JumpAlways(end),
-            SetLabel(check, 1),
-            Removal.SINGLE,
-            SetLabel(end)
-        ).apply(mv, context)
-    }
-}
-
-class ADD(operation: Int, val left: RegOut, val right: RegOut): RegOut(operation) {
-    init {
-        left.refCount += 1
-        right.refCount += 1
-    }
-
-    override fun possibleValues() = right?.possibleValues()?.let { left?.possibleValues()?.flatMap { l -> it.map { r -> l + r } } }?.toSet()
-    override fun canBeZero() = possibleValues()?.contains(0) ?: true
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(a, StackManipulation.Compound(
-            getRegister(b),
-            getRegister(c),
-            Addition.INTEGER
-        )).apply(mv, context)
-    }
-}
-
-class MUL(operation: Int, val left: RegOut, val right: RegOut): RegOut(operation) {
-    init {
-        left.refCount += 1
-        right.refCount += 1
-    }
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(a, StackManipulation.Compound(
-            getRegister(b),
-            getRegister(c),
-            Multiplication.INTEGER
-        )).apply(mv, context)
-    }
-}
-
-class DIV(operation: Int, val left: RegOut, val right: RegOut): RegOut(operation) {
-    init {
-        left.refCount += 1
-        right.refCount += 1
-    }
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(a, StackManipulation.Compound(
-            getRegister(b),
-            UInt2Long,
-            getRegister(c),
-            UInt2Long,
-            DivideLong2UInt
-        )).apply(mv, context)
-    }
-}
-
-class NAND(operation: Int, val left: RegOut, val right: RegOut): RegOut(operation) {
-    init {
-        left.refCount += 1
-        right.refCount += 1
-    }
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(a, StackManipulation.Compound(
-            getRegister(b),
-            getRegister(c),
-            NotAnd
-        )).apply(mv, context)
-    }
-}
-
-class NOTOP(operation: Int, val right: RegOut): RegOut(operation) {
-    init {
-        right.refCount += 1
-    }
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(a, StackManipulation.Compound(
-            getRegister(b),
-            Not
-        )).apply(mv, context)
-    }
-}
-
-object EXIT: Operation(7 shl 28) {
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return StackManipulation.Compound(
-            cleanExit,
-            MethodReturn.VOID
-        ).apply(mv, context)
-    }
-}
-
-class NEW(operation: Int, val size: RegOut): RegOut(operation) {
-    init {
-        size.refCount += 1
-    }
-
-    override fun canBeZero() = false
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(b, allocate(getRegister(c))).apply(mv, context)
-    }
-}
-
-class FREE(operation: Int, val array: RegOut): Operation(operation) {
-    init {
-        array.refCount += 1
-    }
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return free(getRegister(c)).apply(mv, context)
-    }
-}
-
-class OUTPUT(operation: Int, val value: RegOut): Operation(operation) {
-    init {
-        value.refCount += 1
-    }
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return output(getRegister(c)).apply(mv, context)
-        // return StackManipulation.Trivial.INSTANCE.apply(mv, context)
-    }
-}
-
-class INPUT(operation: Int): RegOut(operation) {
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(c, input).apply(mv, context)
-    }
-}
-
-class JUMP(operation: Int, val array: RegOut, val offset: RegOut, val nextPos: Int): Operation(operation) {
-    var labels: Map<Int, Label>? = null
-    init {
-        array.refCount += 1
-        offset.refCount += 1
-    }
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        val fingerReturn = StackManipulation.Compound(
-            setFinger(getRegister(c)),
-            MethodReturn.VOID
-        )
-        val jump = labels?.let { labels ->
-            val pv = offset.possibleValues()!!
-                StackManipulation.Compound(
-                    *(pv.flatMap { pos -> labels.get(pos)?.let { label ->
-                        listOf(
-                            getRegister(c),
-                            IntegerConstant.forValue(pos),
-                            JumpIfEqual(label)
-                        )
-                    } ?: listOf() }.toTypedArray()),
-                    fingerReturn
-                )
-        } ?: fingerReturn
-
-        val check = if (array?.possibleValues() == setOf(0)) {
-            jump
-        } else {
-            val zero = Label()
-            StackManipulation.Compound(
-                getRegister(b),
-                JumpIfZero(zero),
-                doCloneArray(getRegister(b)),
-                fingerReturn,
-                SetLabel(zero),
-                jump
-            )
-        }
-        return StackManipulation.Compound(check).apply(mv, context)
-    }
-}
-
-class GOTO(val nextPos: Int): Operation(-1) {
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return StackManipulation.Compound(
-            setFinger(IntegerConstant.forValue(nextPos)),
-            MethodReturn.VOID
-        ).apply(mv, context)
-    }
-}
-
-class CONST(operation: Int): RegOut(operation) {
-    override fun canBeZero() = (operation and 0x1ffffff) == 0
-    override fun possibleValues() = setOf(operation and 0x1ffffff)
-
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        return setRegister(d, IntegerConstant.forValue(operation and 0x1ffffff)).apply(mv, context)
-    }
-}
-
 fun decode(operator: Int): String {
     val AN: String = "abcdefgh"[operator shr 6 and 7].toString()
     val BN: String = "abcdefgh"[operator shr 3 and 7].toString()
@@ -1121,84 +834,6 @@ fun decode(operator: Int): String {
         12 -> "JUMP [$BN][$CN]"
         13 -> "$DN = ${operator and 0x1ffffff}"
         else -> "Illegal"
-    }
-}
-
-fun compileFragment(um: UM): Fragment {
-    val a0 = um.arrays[0]
-    val canBeZero = BooleanArray(8) { true }
-    val possibleValues = Array<Set<Int>?>(8) { null }
-    val readFrom = BooleanArray(8) { false }
-    val writtenTo = BooleanArray(8) { false }
-    val code = mutableListOf<Operation>()
-    var pos = um.finger
-    val touched = (0..7).map { GET(it) }.toTypedArray<RegOut>()
-    // code += touched
-    val targets = mutableSetOf<Int>()
-    val labels = mutableMapOf<Int, Label>()
-    decode@
-    while (true) {
-        val operation = a0[pos]
-        //System.err.println("$pos: ${decode(operation)}")
-        pos += 1
-        val instruction = Operation.from(operation, touched, pos)
-        code += instruction
-        val op = operation ushr 28
-        if (op == 12) {
-            val jump = instruction as JUMP
-            if (jump.array.canBeZero()) {
-                jump.offset.possibleValues()?.let {
-                    targets += it
-                    jump.labels = labels
-                }
-            }
-        }
-        if ((op == 7 || op == 12) && !(targets.contains(pos) && pos < um.finger + 1000)) break@decode
-        if (pos > um.finger + 1500) {
-            code += GOTO(pos)
-            break@decode
-        }
-    }
-
-//    System.err.println("===> Compiling ${um.finger}-$pos with targets ${targets.joinToString(", ")}")
-/*
-    if (um.finger >= 2250 && um.finger < 2300) {
-        (um.finger until pos).zip(code).forEach { (p, c) -> System.err.println("$p: ${decode(a0[p])} ${if (c is RegOut) c.possibleValues()?.joinToString(", ", "(", ")") ?: "" else ""}") }
-    }
-    */
-    labels += targets.filter { it >= um.finger && it < pos }.associateWith { Label() }
-    val augmented = code.flatMapIndexed { off, c -> labels.get(off + um.finger)?.let { listOf(SetLabel(it), c) } ?: listOf(c) }
-
-    return assembleFragment(augmented, pos, um)
-}
-
-fun assembleFragment(code: List<StackManipulation>, finalPos: Int, um: UM): Fragment {
-    try {
-        val thang = ByteBuddy()
-            .subclass(Fragment::class.java)
-            .method(named("getStart")).intercept(FixedValue.value(um.finger))
-            .method(named("getEnd")).intercept(FixedValue.value(finalPos))
-            .method(named("run")).intercept(object: Implementation {
-                override fun prepare(instrumentedType: InstrumentedType) = instrumentedType
-                override fun appender(target: Implementation.Target?): ByteCodeAppender? {
-                    return object: ByteCodeAppender {
-                        override fun apply(mv: MethodVisitor, context: Implementation.Context, method: MethodDescription): ByteCodeAppender.Size {
-                            return ByteCodeAppender.Size(
-                                    code.fold(0) { acc, op -> Math.max(acc, op.apply(mv, context).getMaximalSize()) },
-                                    3 /* locals.size + 3 */
-                            )
-                        }
-                    }
-                }
-            })
-            .make()
-            .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
-        //val map = thang.saveIn(File("classDump"))
-        //map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
-        return thang.getLoaded().newInstance()
-    } catch (e: net.bytebuddy.jar.asm.MethodTooLargeException) {
-        System.err.println("method too large from ${um.finger}-$finalPos")
-        throw e
     }
 }
 
@@ -1268,7 +903,7 @@ class UM(
 
             try {
                 while (true) {
-                    //System.err.println("TRACE: Starting fragment at $finger with [${registers.joinToString(", ") { it.toString() }}]")
+                    // System.err.println("TRACE: Starting fragment at $finger with [${registers.joinToString(", ") { it.toString() }}]")
                     fragLookup += 1
                     val fragment = fragments[finger] ?: try {
                         fragCompile += 1
