@@ -133,53 +133,6 @@ open class StackOps {
         )
 }
 
-abstract class Operation(val operation: Int): StackManipulation {
-    inline val code get() = operation ushr 28
-    inline val a get() = operation shr 6 and 7
-    inline val b get() = operation shr 3 and 7
-    inline val c get() = operation shr 0 and 7
-    inline val d get() = operation shr 25 and 7
-
-    override fun isValid() = true
-
-    companion object: StackOps() {
-        fun from(operation: Int, touched: Array<RegOut>, pos: Int): Operation {
-            val a = operation shr 6 and 7
-            val b = operation shr 3 and 7
-            val c = operation shr 0 and 7
-            val d = operation shr 25 and 7
-            return when (operation ushr 28) {
-                0 -> /* if (touched[c].possibleValues() == setOf(0)) NOP
-                    else if (!touched[c].canBeZero()) MOVE(operation, touched[b]).also { touched[a] = it }
-                    else*/ IF(operation, touched[c], touched[a], touched[b]).also { touched[a] = it }
-                1 -> LOAD(operation, touched[b], touched[c]).also { touched[a] = it }
-                2 -> STORE(operation, touched[a], touched[b], touched[c], pos)
-                3 -> ADD(operation, touched[b], touched[c]).also { touched[a] = it }
-                4 -> MUL(operation, touched[b], touched[c]).also { touched[a] = it }
-                5 -> DIV(operation, touched[b], touched[c]).also { touched[a] = it }
-                6 -> if (b != c) NAND(operation, touched[b], touched[c]).also { touched[a] = it }
-                    else NOTOP(operation, touched[b]).also { touched[a] = it }
-                7 -> EXIT
-                8 -> NEW(operation, touched[c]).also { touched[b] = it }
-                9 -> FREE(operation, touched[c])
-                10 -> OUTPUT(operation, touched[c])
-                11 -> INPUT(operation).also { touched[c] = it }
-                12 -> JUMP(operation, touched[b], touched[c], pos)
-                13 -> CONST(operation).also { touched[d] = it }
-                else -> throw IllegalArgumentException()
-            }
-        }
-    }
-}
-
-abstract class RegOut(operation: Int): Operation(operation) {
-    var exposed = false
-    var refCount = 0
-
-    open fun canBeZero(): Boolean = true
-    open fun possibleValues(): Set<Int>? = null
-}
-
 class Ref private constructor(
     val nextPos: Int,
     val op: Int,
@@ -207,7 +160,7 @@ class Ref private constructor(
     ) {
         regOut(op)?.let { touched[it] = this }
         when (op ushr 28) {
-            2, 11, 12 -> {
+            2, 11, 12, 14 -> {
                 exposes = touched.clone()
                 touched.forEach { it.mark() }
             }
@@ -215,6 +168,8 @@ class Ref private constructor(
             else -> { /* NOTHING */ }
         }
     }
+
+    fun needsExposure() = (op ushr 28) != 7 && exposes == fetches
 
     fun mark() {
         count += 1
@@ -229,7 +184,7 @@ class Ref private constructor(
     }
 
     fun hasSideEffects() = when (op ushr 28) {
-        2, 7, 9, 10, 11, 12 -> true
+        2, 7, 9, 10, 11, 12, 14 -> true
         else -> false
     }
 
@@ -432,6 +387,7 @@ class Ref private constructor(
                 11 -> buildInput()
                 12 -> buildJump()
                 13 -> buildConst()
+                14 -> buildExposes()
                 15 -> buildReg()
                 else -> throw IllegalStateException("processing bad instruction")
             }
@@ -448,49 +404,6 @@ class Ref private constructor(
         }
     }
 }
-
-/*
-class JumpChecks(which: Int, possibleValues: Set<Int>, labels: Map<Int, Label>): StackManipulation {
-    override fun isValid() = true
-    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
-        val fingerReturn = StackManipulation.Compound(
-            setFinger(getRegister(which)),
-            MethodReturn.VOID
-        )
-        return StackManipulation.Compound(
-            *(possibleValues.flatMap { pos -> labels.get(pos)?.let { label ->
-                listOf(
-                    getRegister(which),
-                    IntegerConstant.forValue(pos),
-                    JumpIfEqual(label)
-                )
-            } ?: listOf() }.toTypedArray()),
-            fingerReturn
-        )
-    }
-    fun sizeEstimate() = possibleValues().size * 8 + 9
-}
-*/
-
-/*
-fun Ref?.estimate() = if (this == null) 4 else if (which > 1) 2 else {
-    which = 2
-    when (op ushr 28) {
-        0 -> a.estimate() + b.estimate() + c.estimate() + 6
-        1 -> 4 + b.estimate() + 2 + c.estimate() + 1
-        2 -> 4 + a.estimate() + 2 + b.estimate() + c.estimate() + 1
-        3, 4 -> b.estimate() + c.estimate() + 1
-        5 -> b.estimate() + c.estimate() + 12
-        6 -> b.estimate() + c.estimate() + 3
-        7 -> 4
-        8, 9, 10 -> 4 + c.estimate()
-        11 -> 4
-        12 -> c.estimate + b.estimate + 5 + (1 + 3 + 3 + 1 + 3) * 2 + 3
-        13 -> 3
-        else -> 0
-    } + (if (count > 1) 3 else 0)
-}
-*/
 
 fun Ref?.possibleValues(): Set<Int>? = if (this == null) null else when (op ushr 28) {
     0 -> a.possibleValues()?.let { b.possibleValues()?.plus(it) }
@@ -509,13 +422,18 @@ class Block(
     val refs = code.asList().subList(start, stop).mapIndexed { off, op ->
         Ref(start + off, op, touched)
     }
+    val refsPlusExposed = if (refs.last().needsExposure()) {
+        refs + Ref(stop, 14 shl 28, touched)
+    } else {
+        refs
+    }
     val canFallThrough = when (code[stop - 1] ushr 28) {
         7, 12 -> false
         else -> true
     }
 
     val triple =
-        refs
+        refsPlusExposed
             .filter { it.hasSideEffects() }
             .fold(Triple(StackManipulation.Trivial.INSTANCE as StackManipulation, 3, 0)) { (ac, al, aS), f ->
                 val (bc, bl, bs) = f.build(Stack.empty, al, true, labels, jumpLabel)
@@ -636,8 +554,8 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
             })
             .make()
             .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
-        // val map = thang.saveIn(File("classDump"))
-        // map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
+        val map = thang.saveIn(File("classDump"))
+        map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
         return Pair(thang.getLoaded().newInstance(), labels.keys)
     } catch (e: net.bytebuddy.jar.asm.MethodTooLargeException) {
         System.err.println("method too large from ${trimmed.first().start}-${trimmed.last().stop}")
