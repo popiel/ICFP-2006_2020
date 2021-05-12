@@ -74,6 +74,8 @@ interface Fragment {
 }
 
 open class StackOps {
+    val tracing = true
+
     fun getRegister(which: Int): StackManipulation {
         return StackManipulation.Compound(
                 getRegisters,
@@ -115,8 +117,10 @@ open class StackOps {
         invokeUMMethod("clearCorruptedFragments", offset, IntegerConstant.forValue(nextPos), IntegerConstant.forValue(finalPos))
     fun clearCorruptedFragments(offset: StackManipulation, nextPos: Int) =
         invokeUMMethod("clearCorruptedFragments", offset, IntegerConstant.forValue(nextPos), getFragmentEnd)
-    fun doIfAssign(a: StackManipulation, b: StackManipulation, c: StackManipulation) = invokeUMMethod("doIfAssign", a, b, c)
     fun doCloneArray(which: StackManipulation) = invokeUMMethod("doCloneArray", which)
+    fun traceFrag(pos: Int) = if (tracing) invokeUMMethod("traceFrag", IntegerConstant.forValue(pos)) else StackManipulation.Trivial.INSTANCE
+    fun traceOp(pos: Int, op: Int, aPos: Int, bPos: Int, cPos: Int) = if (tracing) invokeUMMethod("traceOp", IntegerConstant.forValue(pos), IntegerConstant.forValue(op), IntegerConstant.forValue(aPos), IntegerConstant.forValue(bPos), IntegerConstant.forValue(cPos)) else StackManipulation.Trivial.INSTANCE
+    fun traceSetReg(which: Int, pos: Int) = if (tracing) invokeUMMethod("traceSetReg", IntegerConstant.forValue(which), IntegerConstant.forValue(pos)) else StackManipulation.Trivial.INSTANCE
 
     val clear = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(SortedMap::class.java.getMethod("clear")))
     val clone = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(Object::class.java.getDeclaredMethod("clone")))
@@ -132,6 +136,8 @@ open class StackOps {
             )
         )
 }
+
+data class InternalExposure(val code: StackManipulation, val locals: Int, val size: Int, val stack: Stack)
 
 class Ref private constructor(
     val nextPos: Int,
@@ -191,15 +197,31 @@ class Ref private constructor(
     fun build(stack: Stack, inLocals: Int, remember: Boolean, labels: Map<Int, Label>, jumpLabel: Label): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
 
         fun buildExposes(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            return exposes.foldIndexed(
-                Triple(StackManipulation.Trivial.INSTANCE as StackManipulation, inLocals, 0)
+            val buildUp = exposes.foldIndexed(
+                InternalExposure(StackManipulation.Trivial.INSTANCE, inLocals, 0, stack)
             ) { n, a, f ->
                 if (f == fetches[n] || f == this) a
                 else {
-                   val (c, l, s) = f.build(stack + "[I" + Opcodes.INTEGER, a.second, remember, labels, jumpLabel)
-                   Triple(StackManipulation.Compound(a.first, setRegister(n, c)), l, a.third + s + 4)
+                   val (c, l, s) = f.build(a.stack + "[I" + Opcodes.INTEGER, a.locals, remember, labels, jumpLabel)
+                   InternalExposure(StackManipulation.Compound(
+                       a.code,
+                       getRegisters,
+                       IntegerConstant.forValue(n),
+                       c
+                   ), l, a.size + s + 4, a.stack + "[I" + Opcodes.INTEGER + Opcodes.INTEGER)
                 }
             }
+            val tearDown = exposes.foldRightIndexed(buildUp.code) { n, f, a ->
+                if (f == fetches[n] || f == this) a
+                else {
+                   StackManipulation.Compound(
+                       a,
+                       ArrayAccess.INTEGER.store(),
+                       traceSetReg(n, f.nextPos - 1),
+                   )
+                }
+            }
+            return Triple(tearDown, buildUp.locals, buildUp.size)
         }
 
         fun buildIf(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
@@ -215,7 +237,8 @@ class Ref private constructor(
                 JumpAlways(end),
                 SetLabel(zero, stack, cl),
                 ac,
-                SetLabel(end, stack + Opcodes.INTEGER, cl)
+                SetLabel(end, stack + Opcodes.INTEGER, cl),
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
             ), cl, aS + bs + cs + 6)
         }
 
@@ -227,7 +250,8 @@ class Ref private constructor(
                 bc,
                 arrayList_get,
                 cc,
-                ArrayAccess.INTEGER.load()
+                ArrayAccess.INTEGER.load(),
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
             ), cl, bs + cs + 8)
         }
 
@@ -244,6 +268,7 @@ class Ref private constructor(
                 Dup_x2,
                 getRegister(op and 7),
                 ArrayAccess.INTEGER.store(),
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
                 JumpIfNotZero(check),
                 clearCorruptedFragments(Swap, nextPos),
                 IntegerConstant.forValue(0),
@@ -258,7 +283,8 @@ class Ref private constructor(
             return Triple(StackManipulation.Compound(
                 bc,
                 cc,
-                Addition.INTEGER
+                Addition.INTEGER,
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
             ), cl, bs + cs + 1)
         }
 
@@ -268,7 +294,8 @@ class Ref private constructor(
             return Triple(StackManipulation.Compound(
                 bc,
                 cc,
-                Multiplication.INTEGER
+                Multiplication.INTEGER,
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
             ), cl, bs + cs + 1)
         }
 
@@ -280,7 +307,8 @@ class Ref private constructor(
                 UInt2Long,
                 cc,
                 UInt2Long,
-                DivideLong2UInt
+                DivideLong2UInt,
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
             ), cl, bs + cs + 12)
         }
 
@@ -290,12 +318,14 @@ class Ref private constructor(
             return Triple(StackManipulation.Compound(
                 bc,
                 cc,
-                NotAnd
+                NotAnd,
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
             ), cl, bs + cs + 3)
         }
 
         fun buildHalt(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
             return Triple(StackManipulation.Compound(
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
                 cleanExit,
                 MethodReturn.VOID
             ), inLocals, 5)
@@ -303,24 +333,34 @@ class Ref private constructor(
 
         fun buildNew(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
             val (cc, cl, cs) = c.build(stack + "com/wolfskeep/icfp2006_2020/UM", inLocals, remember, labels, jumpLabel)
-            return Triple(allocate(cc), cl, cs + 4)
+            return Triple(StackManipulation.Compound(
+                allocate(cc),
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
+            ), cl, cs + 4)
         }
 
         fun buildFree(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
             val (cc, cl, cs) = c.build(stack + "com/wolfskeep/icfp2006_2020/UM", inLocals, remember, labels, jumpLabel)
-            return Triple(free(cc), cl, cs + 4)
+            return Triple(StackManipulation.Compound(
+                free(cc),
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
+            ), cl, cs + 4)
         }
 
         fun buildOutput(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
             val (cc, cl, cs) = c.build(stack + "com/wolfskeep/icfp2006_2020/UM", inLocals, remember, labels, jumpLabel)
-            return Triple(output(cc), cl, cs + 4)
+            return Triple(StackManipulation.Compound(
+                output(cc),
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
+            ), cl, cs + 4)
         }
 
         fun buildInput(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
             val (ec, el, es) = buildExposes()
             return Triple(StackManipulation.Compound(
                 ec,
-                setRegister(op and 7, input)
+                setRegister(op and 7, input),
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
             ), el, 8 + es)
         }
 
@@ -343,6 +383,7 @@ class Ref private constructor(
                 return Triple(
                     StackManipulation.Compound(
                         ec,
+                        traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
                         getRegister((op ushr 3) and 7),
                         JumpIfZero(zero),
                         doCloneArray(getRegister((op ushr 3) and 7)),
@@ -360,13 +401,19 @@ class Ref private constructor(
         fun buildConst(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
             // Don't bother putting this in a local variable
             count = 1
-            return Triple(IntegerConstant.forValue(op and 0x1ffffff), inLocals, 3)
+            return Triple(StackManipulation.Compound(
+                IntegerConstant.forValue(op and 0x1ffffff),
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
+            ), inLocals, 3)
         }
 
         fun buildReg(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
             // Don't bother putting this in a local variable
             count = 1
-            return Triple(getRegister(op and 7), inLocals, 4)
+            return Triple(StackManipulation.Compound(
+                getRegister(op and 7),
+                traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
+            ), inLocals, 4)
         }
 
         if (local > 0) {
@@ -399,7 +446,9 @@ class Ref private constructor(
                     MethodVariableAccess.INTEGER.storeAt(local)
                 ), outLocals + 1, size + 3)
             } else {
-                return Triple(chunk, outLocals, size)
+                return Triple(StackManipulation.Compound(
+                    chunk
+                ), outLocals, size)
             }
         }
     }
@@ -512,9 +561,9 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
     val jumpLabel = Label()
     val labels = TreeMap<Int, Label>()
     val blocks = sorted.windowed(2).map { (b, e) -> Block(code, b, e, labels, jumpLabel) }
-    val sizes = blocks.map { it.size }.scan(20) { a, b -> a + b }
+    val sizes = blocks.map { it.size }.scan(20) { a, b -> a + b + 8 }
     // System.err.println("Found ${blocks.size} blocks with total size ${sizes.last()}")
-    val trimmed = if (sizes.last() < 60000) blocks else blocks.take(sizes.indexOfFirst { it > 60000 })
+    val trimmed = if (sizes.last() < 30000) blocks else blocks.take(sizes.indexOfFirst { it > 30000 })
     // System.err.println("Trimmed to ${trimmed.size} blocks with total size ${sizes[trimmed.size - 1]}")
     trimmed.map { it.start }.associateWithTo(labels) { Label() }
 
@@ -525,7 +574,11 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
         Duplication.SINGLE,
         Ref.Companion.setFinger(Swap),
         LookupSwitch(default, labels),
-        *(trimmed.map { StackManipulation.Compound(SetLabel(labels[it.start]!!, Stack.empty, 3), it.stackCode) }.toTypedArray()),
+        *(trimmed.map { StackManipulation.Compound(
+            SetLabel(labels[it.start]!!, Stack.empty, 3),
+            Ref.Companion.traceFrag(it.start),
+            it.stackCode
+        ) }.toTypedArray()),
         if (trimmed.last().canFallThrough)
             Ref.Companion.setFinger(IntegerConstant.forValue(trimmed.last().stop))
         else
@@ -554,8 +607,8 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
             })
             .make()
             .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
-        val map = thang.saveIn(File("classDump"))
-        map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
+        // val map = thang.saveIn(File("classDump"))
+        // map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
         return Pair(thang.getLoaded().newInstance(), labels.keys)
     } catch (e: net.bytebuddy.jar.asm.MethodTooLargeException) {
         System.err.println("method too large from ${trimmed.first().start}-${trimmed.last().stop}")
@@ -751,6 +804,8 @@ fun decode(operator: Int): String {
         11 -> "IN $CN"
         12 -> "JUMP [$BN][$CN]"
         13 -> "$DN = ${operator and 0x1ffffff}"
+        14 -> "SetRegisters"
+        15 -> "LoadRegister $CN"
         else -> "Illegal"
     }
 }
@@ -821,7 +876,7 @@ class UM(
 
             try {
                 while (true) {
-                    System.err.println("TRACE: Starting fragment at $finger with [${registers.joinToString(", ") { it.toString() }}]")
+                    // System.err.println("TRACE: Starting fragment at $finger with [${registers.joinToString(", ") { it.toString() }}]")
                     fragLookup += 1
                     val fragment = fragments[finger] ?: try {
                         fragCompile += 1
@@ -898,10 +953,21 @@ class UM(
         }
     }
 
-    fun doIfAssign(a: Int, b: Int, c: Int) = if (c == 0) a else b
+    fun traceFrag(pos: Int) {
+        System.err.println("TRACE: Starting fragment at $pos with [${registers.joinToString(", ") { it.toString() }}]")
+    }
+
+    fun traceOp(pos: Int, op: Int, aPos: Int, bPos: Int, cPos: Int) {
+        System.err.println("$pos: ${decode(op)}  {A:$aPos, B:$bPos, C:$cPos}")
+    }
+
+    fun traceSetReg(which: Int, pos: Int) {
+        System.err.println("SetReg: ${"abcdefgh"[which].toString()} {$pos}")
+    }
 
     fun doCloneArray(which: Int) {
         fragments.clear()
+        checked.clear()
         arrays[0] = arrays[which].clone()
     }
 
