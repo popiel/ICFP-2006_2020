@@ -206,8 +206,8 @@ class Ref private constructor(
             val zero = Label()
             val end = Label()
             val (cc, cl, cs) = c.build(stack, inLocals, remember, labels, jumpLabel)
-            val (ac, al, aS) = c.build(stack, cl, false, labels, jumpLabel)
-            val (bc, bl, bs) = c.build(stack, cl, false, labels, jumpLabel)
+            val (ac, al, aS) = a.build(stack, cl, false, labels, jumpLabel)
+            val (bc, bl, bs) = b.build(stack, cl, false, labels, jumpLabel)
             return Triple(StackManipulation.Compound(
                 cc,
                 JumpIfZero(zero),
@@ -220,7 +220,7 @@ class Ref private constructor(
         }
 
         fun buildLoad(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (bc, bl, bs) = c.build(stack + "java/util/List", inLocals, remember, labels, jumpLabel)
+            val (bc, bl, bs) = b.build(stack + "java/util/List", inLocals, remember, labels, jumpLabel)
             val (cc, cl, cs) = c.build(stack + "[I", bl, remember, labels, jumpLabel)
             return Triple(StackManipulation.Compound(
                 getArrays,
@@ -253,7 +253,7 @@ class Ref private constructor(
         }
 
         fun buildAdd(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (bc, bl, bs) = c.build(stack, inLocals, remember, labels, jumpLabel)
+            val (bc, bl, bs) = b.build(stack, inLocals, remember, labels, jumpLabel)
             val (cc, cl, cs) = c.build(stack + Opcodes.INTEGER, bl, remember, labels, jumpLabel)
             return Triple(StackManipulation.Compound(
                 bc,
@@ -263,7 +263,7 @@ class Ref private constructor(
         }
 
         fun buildMul(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (bc, bl, bs) = c.build(stack, inLocals, remember, labels, jumpLabel)
+            val (bc, bl, bs) = b.build(stack, inLocals, remember, labels, jumpLabel)
             val (cc, cl, cs) = c.build(stack + Opcodes.INTEGER, bl, remember, labels, jumpLabel)
             return Triple(StackManipulation.Compound(
                 bc,
@@ -273,7 +273,7 @@ class Ref private constructor(
         }
 
         fun buildDiv(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (bc, bl, bs) = c.build(stack, inLocals, remember, labels, jumpLabel)
+            val (bc, bl, bs) = b.build(stack, inLocals, remember, labels, jumpLabel)
             val (cc, cl, cs) = c.build(stack + Opcodes.LONG, bl, remember, labels, jumpLabel)
             return Triple(StackManipulation.Compound(
                 bc,
@@ -285,7 +285,7 @@ class Ref private constructor(
         }
 
         fun buildNand(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (bc, bl, bs) = c.build(stack, inLocals, remember, labels, jumpLabel)
+            val (bc, bl, bs) = b.build(stack, inLocals, remember, labels, jumpLabel)
             val (cc, cl, cs) = c.build(stack + Opcodes.INTEGER, bl, remember, labels, jumpLabel)
             return Triple(StackManipulation.Compound(
                 bc,
@@ -821,7 +821,7 @@ class UM(
 
             try {
                 while (true) {
-                    // System.err.println("TRACE: Starting fragment at $finger with [${registers.joinToString(", ") { it.toString() }}]")
+                    System.err.println("TRACE: Starting fragment at $finger with [${registers.joinToString(", ") { it.toString() }}]")
                     fragLookup += 1
                     val fragment = fragments[finger] ?: try {
                         fragCompile += 1
