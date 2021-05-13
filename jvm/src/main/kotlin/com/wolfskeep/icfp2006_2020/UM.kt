@@ -27,6 +27,7 @@ fun main(args: Array<String>) {
     Ref.Companion.traceSetMem = traceArgs.any { "-tsetmem".startsWith(it) }
     Ref.Companion.traceSetReg = traceArgs.any { "-toperations".startsWith(it) }
     Ref.Companion.traceOp = traceArgs.any { "-toperations".startsWith(it) }
+    Ref.Companion.classSave = args.any { "-save".startsWith(it) && it.startsWith("-s") }
     val file = File(args.find { it[0] != '-' })
     if (!file.canRead()) {
         System.err.println("Cannot read file ${args[0]}")
@@ -79,10 +80,11 @@ interface Fragment {
 }
 
 open class StackOps {
-    var traceFrag = true
-    var traceSetReg = true
-    var traceSetMem = true
-    var traceOp = true
+    var traceFrag = false
+    var traceSetReg = false
+    var traceSetMem = false
+    var traceOp = false
+    var classSave = false
 
     fun getRegister(which: Int): StackManipulation {
         return StackManipulation.Compound(
@@ -175,11 +177,11 @@ class Ref private constructor(
     ) {
         regOut(op)?.let { touched[it] = this }
         when (op ushr 28) {
-            2, 11, 12, 14 -> {
+            2, 9, 11, 12, 14 -> {
                 exposes = touched.clone()
                 touched.forEach { it.mark() }
             }
-            9, 10 -> { mark() }
+            10 -> { mark() }
             else -> { /* NOTHING */ }
         }
     }
@@ -192,7 +194,7 @@ class Ref private constructor(
             when (op ushr 28) {
                 0             -> { a?.mark(); b?.mark(); c?.mark() }
                 1, 3, 4, 5, 6 -> {            b?.mark(); c?.mark() }
-                8, 9, 10      -> {                       c?.mark() }
+                8, 10         -> {                       c?.mark() }
                 else -> { /* NOTHING */ }
             }
         }
@@ -354,11 +356,12 @@ class Ref private constructor(
         }
 
         fun buildFree(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (cc, cl, cs) = c.build(stack + "com/wolfskeep/icfp2006_2020/UM", inLocals, remember, labels, jumpLabel)
+            val (ec, el, es) = buildExposes()
             return Triple(StackManipulation.Compound(
-                free(cc),
+                ec,
+                free(getRegister(op and 7)),
                 traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
-            ), cl, cs + 4)
+            ), el, es + 9)
         }
 
         fun buildOutput(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
@@ -558,7 +561,7 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
             val op = code[end] ushr 28
             end += 1
             when (op) {
-                2, 11 -> { targets += end; break }
+                2, 9, 11 -> { targets += end; break }
                 7 -> break
                 12 -> {
                     if (canBeZero(code, begin, end, (code[end - 1] ushr 3) and 7)) {
@@ -621,8 +624,10 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
             })
             .make()
             .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
-        // val map = thang.saveIn(File("classDump"))
-        // map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
+        if (Ref.Companion.classSave) {
+            val map = thang.saveIn(File("classDump"))
+            map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
+        }
         return Pair(thang.getLoaded().newInstance(), labels.keys)
     } catch (e: net.bytebuddy.jar.asm.MethodTooLargeException) {
         System.err.println("method too large from ${trimmed.first().start}-${trimmed.last().stop}")
