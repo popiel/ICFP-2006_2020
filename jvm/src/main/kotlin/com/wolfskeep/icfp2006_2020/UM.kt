@@ -22,7 +22,12 @@ import org.jline.reader.*
 import org.jline.terminal.*
 
 fun main(args: Array<String>) {
-    val file = File(args[0])
+    val traceArgs = args.filter { it.startsWith("-t") }.map { it.toLowerCase() }
+    Ref.Companion.traceFrag = traceArgs.any { "-tfragments".startsWith(it) }
+    Ref.Companion.traceSetMem = traceArgs.any { "-tsetmem".startsWith(it) }
+    Ref.Companion.traceSetReg = traceArgs.any { "-toperations".startsWith(it) }
+    Ref.Companion.traceOp = traceArgs.any { "-toperations".startsWith(it) }
+    val file = File(args.find { it[0] != '-' })
     if (!file.canRead()) {
         System.err.println("Cannot read file ${args[0]}")
         System.exit(1)
@@ -74,7 +79,10 @@ interface Fragment {
 }
 
 open class StackOps {
-    val tracing = true
+    var traceFrag = true
+    var traceSetReg = true
+    var traceSetMem = true
+    var traceOp = true
 
     fun getRegister(which: Int): StackManipulation {
         return StackManipulation.Compound(
@@ -118,9 +126,10 @@ open class StackOps {
     fun clearCorruptedFragments(offset: StackManipulation, nextPos: Int) =
         invokeUMMethod("clearCorruptedFragments", offset, IntegerConstant.forValue(nextPos), getFragmentEnd)
     fun doCloneArray(which: StackManipulation) = invokeUMMethod("doCloneArray", which)
-    fun traceFrag(pos: Int) = if (tracing) invokeUMMethod("traceFrag", IntegerConstant.forValue(pos)) else StackManipulation.Trivial.INSTANCE
-    fun traceOp(pos: Int, op: Int, aPos: Int, bPos: Int, cPos: Int) = if (tracing) invokeUMMethod("traceOp", IntegerConstant.forValue(pos), IntegerConstant.forValue(op), IntegerConstant.forValue(aPos), IntegerConstant.forValue(bPos), IntegerConstant.forValue(cPos)) else StackManipulation.Trivial.INSTANCE
-    fun traceSetReg(which: Int, pos: Int) = if (tracing) invokeUMMethod("traceSetReg", IntegerConstant.forValue(which), IntegerConstant.forValue(pos)) else StackManipulation.Trivial.INSTANCE
+    fun traceFrag(pos: Int) = if (traceFrag) invokeUMMethod("traceFrag", IntegerConstant.forValue(pos)) else StackManipulation.Trivial.INSTANCE
+    fun traceOp(pos: Int, op: Int, aPos: Int, bPos: Int, cPos: Int) = if (traceOp) invokeUMMethod("traceOp", IntegerConstant.forValue(pos), IntegerConstant.forValue(op), IntegerConstant.forValue(aPos), IntegerConstant.forValue(bPos), IntegerConstant.forValue(cPos)) else StackManipulation.Trivial.INSTANCE
+    fun traceSetReg(which: Int, pos: Int) = if (traceSetReg) invokeUMMethod("traceSetReg", IntegerConstant.forValue(which), IntegerConstant.forValue(pos)) else StackManipulation.Trivial.INSTANCE
+    fun traceSetMem(array: StackManipulation, offset: StackManipulation, value: StackManipulation) = if (traceSetMem) invokeUMMethod("traceSetMem", array, offset, value) else StackManipulation.Trivial.INSTANCE
 
     val clear = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(SortedMap::class.java.getMethod("clear")))
     val clone = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(Object::class.java.getDeclaredMethod("clone")))
@@ -268,6 +277,11 @@ class Ref private constructor(
                 Dup_x2,
                 getRegister(op and 7),
                 ArrayAccess.INTEGER.store(),
+                traceSetMem(
+                    getRegister((op ushr 6) and 7),
+                    getRegister((op ushr 3) and 7),
+                    getRegister(op and 7)
+                ),
                 traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
                 JumpIfNotZero(check),
                 clearCorruptedFragments(Swap, nextPos),
@@ -963,6 +977,10 @@ class UM(
 
     fun traceSetReg(which: Int, pos: Int) {
         System.err.println("SetReg: ${"abcdefgh"[which].toString()} {$pos}")
+    }
+
+    fun traceSetMem(array: Int, offset: Int, value: Int) {
+        System.err.println("TRACE: Setting $array[$offset] = $value")
     }
 
     fun doCloneArray(which: Int) {
