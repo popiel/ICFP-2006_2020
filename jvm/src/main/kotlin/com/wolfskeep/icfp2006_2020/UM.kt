@@ -249,8 +249,10 @@ class Ref private constructor(
                 SetLabel(zero, stack, cl),
                 ac,
                 SetLabel(end, stack + Opcodes.INTEGER, cl),
+                IntegerConstant.forValue(0),
+                Removal.SINGLE,
                 traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
-            ), cl, aS + bs + cs + 6)
+            ), cl, aS + bs + cs + 8)
         }
 
         fun buildLoad(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
@@ -623,12 +625,13 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
                 }
             })
             .make()
-            .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
         if (Ref.Companion.classSave) {
             val map = thang.saveIn(File("classDump"))
             map.forEach { (k, v) -> System.err.println("Assembled: $k: $v") }
         }
-        return Pair(thang.getLoaded().newInstance(), labels.keys)
+        return Pair(thang
+            .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+            .getLoaded().newInstance(), labels.keys)
     } catch (e: net.bytebuddy.jar.asm.MethodTooLargeException) {
         System.err.println("method too large from ${trimmed.first().start}-${trimmed.last().stop}")
         throw e
