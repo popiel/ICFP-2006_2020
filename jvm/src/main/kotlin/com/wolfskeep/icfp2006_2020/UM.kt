@@ -148,6 +148,7 @@ class UM(
                     2 -> {
                         arrays[A][B] = C
                         if (traceSet) System.err.println("TRACE: Setting $A[$B] = $C")
+                        if (traceFrag) System.err.println("TRACE: Starting fragment at $finger with [${registers.joinToString(", ")}]")
                     }
                     3 -> A = B + C
                     4 -> A = B * C
