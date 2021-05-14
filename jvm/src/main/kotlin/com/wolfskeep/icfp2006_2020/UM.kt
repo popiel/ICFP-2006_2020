@@ -385,13 +385,17 @@ class Ref private constructor(
 
         fun buildJump(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
             val (ec, el, es) = buildExposes()
-            // val pv = c.possibleValues() ?: setOf()
+            val pv = c.possibleValues()
             // val jump = JumpChecks(op and 7, pv, labels)
             // val jumpSize = jump.sizeEstimate()
-            val jump = StackManipulation.Compound(
-                getRegister(op and 7),
-                JumpAlways(jumpLabel)
-            )
+            val jump = if (pv != null && pv.size == 1 && labels[pv.first()] != null) {
+                JumpAlways(labels[pv.first()]!!)
+            } else {
+                StackManipulation.Compound(
+                    getRegister(op and 7),
+                    JumpAlways(jumpLabel)
+                )
+            }
             val jumpSize = 7;
 
 
@@ -582,7 +586,7 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
     val blocks = sorted.windowed(2).map { (b, e) -> Block(code, b, e, labels, jumpLabel) }
     val sizes = blocks.map { it.size }.scan(20) { a, b -> a + b + 8 }
     // System.err.println("Found ${blocks.size} blocks with total size ${sizes.last()}")
-    val trimmed = if (sizes.last() < 30000) blocks else blocks.take(sizes.indexOfFirst { it > 30000 })
+    val trimmed = if (sizes.last() < 40000) blocks else blocks.take(sizes.indexOfFirst { it > 40000 })
     // System.err.println("Trimmed to ${trimmed.size} blocks with total size ${sizes[trimmed.size - 1]}")
     trimmed.map { it.start }.associateWithTo(labels) { Label() }
 
