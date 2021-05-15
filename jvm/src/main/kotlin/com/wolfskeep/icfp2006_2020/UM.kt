@@ -119,6 +119,8 @@ open class StackOps {
     val getFinger = invokeUMMethod("getFinger")
     fun setFinger(where: StackManipulation) = invokeUMMethod("setFinger", where)
     val cleanExit = invokeUMMethod("cleanExit")
+    val countJump = invokeUMMethod("countJump")
+    val countJumpViaTable = invokeUMMethod("countJumpViaTable")
     fun allocate(size: StackManipulation) = invokeUMMethod("allocate", size)
     fun free(which: StackManipulation) = invokeUMMethod("free", which)
     val input = invokeUMMethod("input")
@@ -504,11 +506,12 @@ class Ref private constructor(
             val (jc, jl, js) = buildJumpChecks(c)
 
             if (b.possibleValues() == setOf(0)) {
-                return Triple(StackManipulation.Compound(ec, jc), el, es + js)
+                return Triple(StackManipulation.Compound(countJump, ec, jc), el, es + js + 4)
             } else {
                 val zero = Label()
                 return Triple(
                     StackManipulation.Compound(
+                        countJump,
                         ec,
                         traceOp(nextPos - 1, op, a.nextPos - 1, b.nextPos - 1, c.nextPos - 1),
                         getRegister((op ushr 3) and 7),
@@ -520,7 +523,7 @@ class Ref private constructor(
                         jc
                     ),
                     el,
-                    js + 23 + es
+                    js + 23 + es + 4
                 )
             }
         }
@@ -705,6 +708,7 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
         SetLabel(jumpLabel, Stack.empty + Opcodes.INTEGER, 3),
         Duplication.SINGLE,
         Ref.Companion.setFinger(Swap),
+        Ref.Companion.countJumpViaTable,
         LookupSwitch(default, labels),
         *(trimmed.map { StackManipulation.Compound(
             SetLabel(labels[it.start]!!, Stack.empty, 3),
@@ -977,6 +981,8 @@ class UM(
     var fragFailure = 0L
     var fragRun = 0L
     var fragInvalidate = 0L
+    var jumpCount = 0L
+    var jumpViaTable = 0L
 
     val checked = mutableSetOf<Int>()
 
@@ -1079,13 +1085,23 @@ class UM(
             } catch (e: CleanExitException) {}
             finally {
                 System.err.println("Fragments:")
-                System.err.println("  Lookup:     $fragLookup")
+                System.err.println("  Jumps:      $jumpCount")
+                System.err.println("  Via Table:  $jumpViaTable  (${jumpViaTable * 100 / jumpCount}%)")
+                System.err.println("  Lookup:     $fragLookup  (${fragLookup * 100 / jumpCount}%)")
                 System.err.println("  Compile:    $fragCompile  (${fragCompile * 100 / fragLookup}%)")
                 System.err.println("  Failure:    $fragFailure  (${fragFailure * 100 / fragLookup}%)")
                 System.err.println("  Run:        $fragRun  (${fragRun * 100 / fragLookup}%)")
                 System.err.println("  Invalidate: $fragInvalidate")
             }
         }
+    }
+
+    fun countJump() {
+        jumpCount += 1
+    }
+
+    fun countJumpViaTable() {
+        jumpViaTable += 1
     }
 
     fun traceFrag(pos: Int) {
