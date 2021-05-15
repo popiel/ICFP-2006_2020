@@ -431,6 +431,23 @@ class Ref private constructor(
                 val bpv = target.b.possibleValues()
                 val (cc, cl, cs) = target.c.build(stack, inLocals, remember, labels, jumpLabel)
 
+                if (apv?.size == 1 && bpv?.size == 1 && labels[apv.first()] != null && labels[bpv.first()] != null) {
+                    if (apv.first() == nextPos) {
+                        return Triple(StackManipulation.Compound(
+//                            output(IntegerConstant.forValue(93)),
+                            cc,
+                            JumpIfNotZero(labels[bpv.first()]!!)
+                        ), inLocals, cs + 3)
+                    }
+                    if (bpv.first() == nextPos) {
+                        return Triple(StackManipulation.Compound(
+//                            output(IntegerConstant.forValue(91)),
+                            cc,
+                            JumpIfZero(labels[apv.first()]!!)
+                        ), inLocals, cs + 3)
+                    }
+                }
+
                 if (apv?.size == 1 && labels[apv.first()] != null && apv.first() != nextPos) {
                     val (bc, bl, bs) = buildJumpChecks(target.b)
                     return Triple(StackManipulation.Compound(
