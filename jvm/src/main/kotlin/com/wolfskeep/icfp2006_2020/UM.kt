@@ -192,11 +192,20 @@ class Ref private constructor(
         count += 1
         if (count == 1) {
             when (op ushr 28) {
-                0             -> { a?.mark(); b?.mark(); c?.mark() }
-                1, 3, 4, 5, 6 -> {            b?.mark(); c?.mark() }
-                8, 10         -> {                       c?.mark() }
+                0             -> { a.mark(); b.mark(); c.mark() }
+                1, 3, 4, 5, 6 -> {           b.mark(); c.mark() }
+                8, 10         -> {                     c.mark() }
+                12 -> { markJumpChecks(c) }
                 else -> { /* NOTHING */ }
             }
+        }
+    }
+
+    fun markJumpChecks(c: Ref) {
+        if ((c.op ushr 28) == 0 && c.possibleValues() != null) {
+            c.c.mark()
+            markJumpChecks(c.a)
+            markJumpChecks(c.b)
         }
     }
 
@@ -383,24 +392,102 @@ class Ref private constructor(
             ), el, 8 + es)
         }
 
-        fun buildJump(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
-            val (ec, el, es) = buildExposes()
-            val pv = c.possibleValues()
-            // val jump = JumpChecks(op and 7, pv, labels)
-            // val jumpSize = jump.sizeEstimate()
-            val jump = if (pv != null && pv.size == 1 && labels[pv.first()] != null) {
-                JumpAlways(labels[pv.first()]!!)
-            } else {
-                StackManipulation.Compound(
+        fun buildJumpChecks(target: Ref): Triple<StackManipulation, Int, Int> {
+            val tpv = target.possibleValues()
+            if (tpv == null) {
+                return Triple(StackManipulation.Compound(
                     getRegister(op and 7),
                     JumpAlways(jumpLabel)
-                )
+                ), inLocals, 7)
             }
-            val jumpSize = 7;
 
+            if (tpv.size == 1) {
+                val where = labels[tpv.first()]
+                if (where != null) {
+                    if (tpv.first() != nextPos) {
+                        return Triple(StackManipulation.Compound(
+//                            output(IntegerConstant.forValue(33)),
+                            JumpAlways(where)
+                        ), inLocals, 3)
+                    } else {
+                        // Avoid doubled labels
+                        return Triple(StackManipulation.Compound(
+//                            output(IntegerConstant.forValue(61)),
+                            IntegerConstant.forValue(0),
+                            Removal.SINGLE
+                        ), inLocals, 2)
+                    }
+                } else {
+                    return Triple(StackManipulation.Compound(
+//                        output(IntegerConstant.forValue(34)),
+                        IntegerConstant.forValue(tpv.first()),
+                        JumpAlways(jumpLabel)
+                    ), inLocals, 6)
+                }
+            }
+
+            if ((target.op ushr 28) == 0 && target.nextPos == nextPos - 1) {
+                val apv = target.a.possibleValues()
+                val bpv = target.b.possibleValues()
+                val (cc, cl, cs) = target.c.build(stack, inLocals, remember, labels, jumpLabel)
+
+                if (apv?.size == 1 && labels[apv.first()] != null && apv.first() != nextPos) {
+                    val (bc, bl, bs) = buildJumpChecks(target.b)
+                    return Triple(StackManipulation.Compound(
+//                        output(IntegerConstant.forValue(60)),
+                        cc,
+                        JumpIfZero(labels[apv.first()]!!),
+                        bc
+                    ), inLocals, cs + bs + 3)
+                }
+                if (bpv?.size == 1 && labels[bpv.first()] != null && bpv.first() != nextPos) {
+                    val (ac, al, aS) = buildJumpChecks(target.a)
+                    return Triple(StackManipulation.Compound(
+//                        output(IntegerConstant.forValue(62)),
+                        cc,
+                        JumpIfNotZero(labels[bpv.first()]!!),
+                        ac
+                    ), inLocals, cs + aS + 3)
+                }
+
+/*
+                val (ac, al, aS) = buildJumpChecks(target.a)
+                val (bc, bl, bs) = buildJumpChecks(target.b)
+                val label = Label()
+                if (apv?.contains(nextPos) ?: false) {
+                    return Triple(StackManipulation.Compound(
+//                        output(IntegerConstant.forValue(40)),
+                        cc,
+                        JumpIfZero(label),
+                        bc,
+                        SetLabel(label, stack, inLocals),
+                        ac
+                    ), inLocals, aS + bs + cs + 3)
+                } else {
+                    return Triple(StackManipulation.Compound(
+//                        output(IntegerConstant.forValue(41)),
+                        cc,
+                        JumpIfNotZero(label),
+                        ac,
+                        SetLabel(label, stack, inLocals),
+                        bc
+                    ), inLocals, aS + bs + cs + 3)
+                }
+*/
+            }
+            return Triple(StackManipulation.Compound(
+//                output(IntegerConstant.forValue(126)),
+                getRegister(op and 7),
+                JumpAlways(jumpLabel)
+            ), inLocals, 7)
+        }
+
+        fun buildJump(): Triple<StackManipulation, /* outLocals */ Int, /* sizeEstimate */ Int> {
+            val (ec, el, es) = buildExposes()
+            val (jc, jl, js) = buildJumpChecks(c)
 
             if (b.possibleValues() == setOf(0)) {
-                return Triple(StackManipulation.Compound(ec, jump), el, jumpSize + es)
+                return Triple(StackManipulation.Compound(ec, jc), el, es + js)
             } else {
                 val zero = Label()
                 return Triple(
@@ -412,11 +499,11 @@ class Ref private constructor(
                         doCloneArray(getRegister((op ushr 3) and 7)),
                         setFinger(getRegister(op and 7)),
                         MethodReturn.VOID,
-                        SetLabel(zero, Stack.empty, 3),
-                        jump
+                        SetLabel(zero, Stack.empty, el),
+                        jc
                     ),
                     el,
-                    jumpSize + 22 + es
+                    js + 23 + es
                 )
             }
         }
@@ -580,15 +667,20 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
         }
         // System.err.println("Discovered $begin to $end")
     }
-    val sorted = (targets.toList() + end).filter { it >= start && it <= end }.sorted()
+    val sorted = targets.toList().filter { it >= start && it <= end }.sorted()
     val jumpLabel = Label()
     val labels = TreeMap<Int, Label>()
-    val blocks = sorted.windowed(2).map { (b, e) -> Block(code, b, e, labels, jumpLabel) }
+    sorted.associateWithTo(labels) { Label() }
+    val blocks = (sorted + end).windowed(2).map { (b, e) -> Block(code, b, e, labels, jumpLabel) }
     val sizes = blocks.map { it.size }.scan(20) { a, b -> a + b + 8 }
     // System.err.println("Found ${blocks.size} blocks with total size ${sizes.last()}")
-    val trimmed = if (sizes.last() < 40000) blocks else blocks.take(sizes.indexOfFirst { it > 40000 })
+    val trimmed = if (sizes.last() < 40000) blocks else {
+        val sorted2 = sorted.take(sizes.indexOfFirst { it > 40000 })
+        labels.clear()
+        sorted2.dropLast(1).associateWithTo(labels) { Label() }
+        sorted2.windowed(2).map { (b, e) -> Block(code, b, e, labels, jumpLabel) }
+    }
     // System.err.println("Trimmed to ${trimmed.size} blocks with total size ${sizes[trimmed.size - 1]}")
-    trimmed.map { it.start }.associateWithTo(labels) { Label() }
 
     val default = Label()
     val stackCode = StackManipulation.Compound(
