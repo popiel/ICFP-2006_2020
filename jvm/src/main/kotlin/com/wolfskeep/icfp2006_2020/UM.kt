@@ -121,6 +121,8 @@ open class StackOps {
     val cleanExit = invokeUMMethod("cleanExit")
     val countJump = invokeUMMethod("countJump")
     val countJumpViaTable = invokeUMMethod("countJumpViaTable")
+    val countJumpFallthrough = invokeUMMethod("countJumpFallthrough")
+    val countJumpUnknown = invokeUMMethod("countJumpUnknown")
     fun allocate(size: StackManipulation) = invokeUMMethod("allocate", size)
     fun free(which: StackManipulation) = invokeUMMethod("free", which)
     val input = invokeUMMethod("input")
@@ -398,6 +400,7 @@ class Ref private constructor(
             val tpv = target.possibleValues()
             if (tpv == null) {
                 return Triple(StackManipulation.Compound(
+                    countJumpUnknown,
                     getRegister(op and 7),
                     JumpAlways(jumpLabel)
                 ), inLocals, 7)
@@ -422,11 +425,21 @@ class Ref private constructor(
                 } else {
                     return Triple(StackManipulation.Compound(
 //                        output(IntegerConstant.forValue(34)),
-                        IntegerConstant.forValue(tpv.first()),
-                        JumpAlways(jumpLabel)
-                    ), inLocals, 6)
+                        setFinger(IntegerConstant.forValue(tpv.first())),
+                        MethodReturn.VOID
+                    ), inLocals, 7)
                 }
             }
+
+/*
+            if (tpv.all { labels[it] == null }) {
+                return Triple(StackManipulation.Compound(
+//                    output(IntegerConstant.forValue(34)),
+                    setFinger(getRegister(op and 7)),
+                    MethodReturn.VOID
+                ), inLocals, 8)
+            }
+*/
 
             if ((target.op ushr 28) == 0 && target.nextPos == nextPos - 1) {
                 val apv = target.a.possibleValues()
@@ -720,6 +733,7 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
         else
             StackManipulation.Trivial.INSTANCE,
         SetLabel(default, Stack.empty, 3),
+        Ref.Companion.countJumpFallthrough,
         MethodReturn.VOID
     )
     val maxLocals = trimmed.map { it.maxLocals }.max()
@@ -983,6 +997,8 @@ class UM(
     var fragInvalidate = 0L
     var jumpCount = 0L
     var jumpViaTable = 0L
+    var jumpFallthrough = 0L
+    var jumpUnknown = 0L
 
     val checked = mutableSetOf<Int>()
 
@@ -1085,13 +1101,15 @@ class UM(
             } catch (e: CleanExitException) {}
             finally {
                 System.err.println("Fragments:")
-                System.err.println("  Jumps:      $jumpCount")
-                System.err.println("  Via Table:  $jumpViaTable  (${jumpViaTable * 100 / jumpCount}%)")
-                System.err.println("  Lookup:     $fragLookup  (${fragLookup * 100 / jumpCount}%)")
-                System.err.println("  Compile:    $fragCompile  (${fragCompile * 100 / fragLookup}%)")
-                System.err.println("  Failure:    $fragFailure  (${fragFailure * 100 / fragLookup}%)")
-                System.err.println("  Run:        $fragRun  (${fragRun * 100 / fragLookup}%)")
-                System.err.println("  Invalidate: $fragInvalidate")
+                System.err.println("  Jumps:       $jumpCount")
+                System.err.println("  Unknown:     $jumpUnknown  (${jumpUnknown * 100 / jumpCount}%)")
+                System.err.println("  Via Table:   $jumpViaTable  (${jumpViaTable * 100 / jumpCount}%)")
+                System.err.println("  Fallthrough: $jumpFallthrough  (${jumpFallthrough * 100 / jumpCount}%)")
+                System.err.println("  Lookup:      $fragLookup  (${fragLookup * 100 / jumpCount}%)")
+                System.err.println("  Compile:     $fragCompile  (${fragCompile * 100 / fragLookup}%)")
+                System.err.println("  Failure:     $fragFailure  (${fragFailure * 100 / fragLookup}%)")
+                System.err.println("  Run:         $fragRun  (${fragRun * 100 / fragLookup}%)")
+                System.err.println("  Invalidate:  $fragInvalidate")
             }
         }
     }
@@ -1102,6 +1120,14 @@ class UM(
 
     fun countJumpViaTable() {
         jumpViaTable += 1
+    }
+
+    fun countJumpFallthrough() {
+        jumpFallthrough += 1
+    }
+
+    fun countJumpUnknown() {
+        jumpUnknown += 1
     }
 
     fun traceFrag(pos: Int) {
