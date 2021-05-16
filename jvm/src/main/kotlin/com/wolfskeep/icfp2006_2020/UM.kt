@@ -73,14 +73,8 @@ fun loadState(ds: DataInputStream, first: Int): UM {
     return UM(arrays, available, registers, finger, outBuffer)
 }
 
-interface Fragment {
-    val start: Int
-    val end: Int
-    fun run(um: UM, registers: IntArray)
-}
-
 interface Runner {
-    fun run(um: UM, registers: IntArray, a0: IntArray, op: Int)
+    fun run(um: UM, registers: IntArray, a0: IntArray, op: Int, finger: Int)
 }
 
 open class StackOps {
@@ -298,6 +292,14 @@ object Dup_x2: StackManipulation {
     }
 }
 
+class IInc(val which: Int, val increment: Int): StackManipulation {
+    override fun isValid() = true
+    override fun apply(mv: MethodVisitor, context: Implementation.Context): StackManipulation.Size {
+        mv.visitIincInsn(which, increment)
+        return StackManipulation.Size(0, 0)
+    }
+}
+
 fun decode(operator: Int): String {
     val AN: String = "abcdefgh"[operator shr 6 and 7].toString()
     val BN: String = "abcdefgh"[operator shr 3 and 7].toString()
@@ -324,7 +326,6 @@ fun decode(operator: Int): String {
     }
 }
 
-class InterruptedFragmentException(): RuntimeException()
 class CleanExitException(): RuntimeException()
 
 object MakeRunner: StackOps() {
@@ -438,7 +439,10 @@ object MakeRunner: StackOps() {
 
     val opFree = free(getRegister(c))
     val opOutput = output(getRegister(c))
-    val opInput = setRegister(c, input)
+    val opInput = StackManipulation.Compound(
+        setFinger(MethodVariableAccess.INTEGER.loadFrom(5)),
+        setRegister(c, input)
+    )
 
     val jumpLabel = Label()
     val opJump = StackManipulation.Compound(
@@ -447,7 +451,8 @@ object MakeRunner: StackOps() {
         doCloneArray(getRegister(b)),
         getArrayZero,
         VisitLabel(jumpLabel),
-        setFinger(getRegister(c))
+        getRegister(c),
+        MethodVariableAccess.INTEGER.storeAt(5)
     )
 
     val opConst = setRegister(d, v)
@@ -475,11 +480,8 @@ object MakeRunner: StackOps() {
         getArrayZero,
         VisitLabel(mainLoop),
         MethodVariableAccess.REFERENCE.loadFrom(3),
-        getFinger,
-        Duplication.SINGLE,
-        IntegerConstant.forValue(1),
-        Addition.INTEGER,
-        setFinger(Swap),
+        MethodVariableAccess.INTEGER.loadFrom(5),
+        IInc(5, 1),
         ArrayAccess.INTEGER.load(),
         Duplication.SINGLE,
         MethodVariableAccess.INTEGER.storeAt(4),
@@ -494,7 +496,7 @@ object MakeRunner: StackOps() {
     val bca = object: ByteCodeAppender {
         override fun apply(mv: MethodVisitor, context: Implementation.Context, desc: MethodDescription): ByteCodeAppender.Size {
             val size = full.apply(mv, context)
-            return ByteCodeAppender.Size(size.getMaximalSize(), 5)
+            return ByteCodeAppender.Size(size.getMaximalSize(), 6)
         }
     }
 
@@ -507,7 +509,7 @@ object MakeRunner: StackOps() {
             }
         })
         .make()
-        .load(Fragment::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+        .load(Runner::class.java.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
         .getLoaded().newInstance() as Runner
 }
 
@@ -547,7 +549,7 @@ class UM(
             terminalOut = terminal.writer()
 
             try {
-                MakeRunner.runner.run(this, registers, arrays[0], 0)
+                MakeRunner.runner.run(this, registers, arrays[0], 0, 0)
             } catch (e: CleanExitException) {} 
         }
     }
