@@ -54,14 +54,12 @@ fun loadState(ds: DataInputStream, first: Int): UM {
     for (j in 0..7) registers[j] = ds.readInt()
     val outBuffer = ByteArray(256)
     ds.readFully(outBuffer)
-    val arrays = ArrayList<IntArray>()
-    for (j in 0 until (first and ((1 shl 28) - 1))) {
+    val arrays = Array<IntArray>(first and 0x0fffffff) {
         val arr = IntArray(ds.readInt())
         for (k in 0 until arr.size) arr[k] = ds.readInt()
-        arrays += arr
+        arr
     }
-    val available = ArrayDeque<Int>()
-    for (j in 0 until ds.readInt()) available.add(ds.readInt())
+    val nextAvailable = ds.readInt()
 
     print(if (outBuffer[0].toInt() == 0) {
         outBuffer.dropWhile { it.toInt() == 0 }
@@ -70,11 +68,11 @@ fun loadState(ds: DataInputStream, first: Int): UM {
     }.joinToString("") { it.toChar().toString() })
     System.out.flush()
 
-    return UM(arrays, available, registers, finger, outBuffer)
+    return UM(arrays, nextAvailable, registers, finger, outBuffer)
 }
 
 interface Runner {
-    fun run(um: UM, registers: IntArray, a0: IntArray, op: Int, finger: Int)
+    fun run(um: UM, registers: IntArray, a0: IntArray, op: Int, finger: Int, arrays: Array<IntArray>)
 }
 
 open class StackOps {
@@ -135,8 +133,14 @@ open class StackOps {
 
     val clear = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(SortedMap::class.java.getMethod("clear")))
     val clone = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(Object::class.java.getDeclaredMethod("clone")))
+/*
     val arrayList_get = StackManipulation.Compound(
         MethodInvocation.invoke(MethodDescription.ForLoadedMethod(java.util.List::class.java.getDeclaredMethod("get", Int::class.java))),
+        TypeCasting.to(TypeDescription.ForLoadedType(IntArray::class.java))
+    )
+*/
+    val arrayList_get = StackManipulation.Compound(
+        ArrayAccess.REFERENCE.load(),
         TypeCasting.to(TypeDescription.ForLoadedType(IntArray::class.java))
     )
 }
@@ -333,7 +337,7 @@ object MakeRunner: StackOps() {
     val mainLoop = Label()
 
     val getArrayZero = StackManipulation.Compound(
-        getArrays,
+        MethodVariableAccess.REFERENCE.loadFrom(6), // getArrays,
         IntegerConstant.forValue(0),
         arrayList_get,
         MethodVariableAccess.REFERENCE.storeAt(3)
@@ -387,7 +391,7 @@ object MakeRunner: StackOps() {
 
     val opFetch = 
         setRegister(a, StackManipulation.Compound(
-            getArrays,
+            MethodVariableAccess.REFERENCE.loadFrom(6), // getArrays,
             getRegister(b),
             arrayList_get,
             getRegister(c),
@@ -395,7 +399,7 @@ object MakeRunner: StackOps() {
         ))
 
     val opStore = StackManipulation.Compound(
-        getArrays,
+        MethodVariableAccess.REFERENCE.loadFrom(6), // getArrays,
         getRegister(a),
         arrayList_get,
         getRegister(b),
@@ -435,7 +439,11 @@ object MakeRunner: StackOps() {
 
     val opHalt = cleanExit
 
-    val opNew = setRegister(b, allocate(getRegister(c)))
+    val opNew = StackManipulation.Compound(
+        setRegister(b, allocate(getRegister(c))),
+        getArrays,
+        MethodVariableAccess.REFERENCE.storeAt(6)
+    )
 
     val opFree = free(getRegister(c))
     val opOutput = output(getRegister(c))
@@ -496,7 +504,7 @@ object MakeRunner: StackOps() {
     val bca = object: ByteCodeAppender {
         override fun apply(mv: MethodVisitor, context: Implementation.Context, desc: MethodDescription): ByteCodeAppender.Size {
             val size = full.apply(mv, context)
-            return ByteCodeAppender.Size(size.getMaximalSize(), 6)
+            return ByteCodeAppender.Size(size.getMaximalSize(), 7)
         }
     }
 
@@ -514,15 +522,15 @@ object MakeRunner: StackOps() {
 }
 
 class UM(
-        val arrays: MutableList<IntArray>,
-        val available: ArrayDeque<Int>,
+        var arrays: Array<IntArray>,
+        var nextAvailable: Int,
         val registers: IntArray,
         var finger: Int,
         val outBuffer: ByteArray
 ) {
     constructor(a0: IntArray): this(
-            mutableListOf(a0),
-            ArrayDeque<Int>(),
+            arrayOf(a0),
+            -1,
             IntArray(8),
             0,
             ByteArray(256)
@@ -549,7 +557,7 @@ class UM(
             terminalOut = terminal.writer()
 
             try {
-                MakeRunner.runner.run(this, registers, arrays[0], 0, 0)
+                MakeRunner.runner.run(this, registers, arrays[0], 0, finger, arrays)
             } catch (e: CleanExitException) {} 
         }
     }
@@ -579,21 +587,36 @@ class UM(
     }
 
     fun allocate(size: Int): Int {
-        val fresh = if (size == 0) blank else IntArray(size)
-        if (available.size == 0) {
-            val which = arrays.size
-            arrays += fresh
-            return which
+        if (nextAvailable < 0) {
+            val oldSize = arrays.size
+            val newSize = if (oldSize < 16) 16 else oldSize * 2
+            arrays = Arrays.copyOf(arrays, newSize)
+            var n = oldSize + 1
+            while (n < newSize) {
+                arrays[n] = IntArray(8)
+                arrays[n][0] = n + 1
+                n = n + 1
+            }
+            arrays[newSize - 1][0] = -1
+            arrays[oldSize] = IntArray(size + 1)
+            nextAvailable = oldSize + 1
+            return oldSize
         } else {
-            val which = available.removeLast()
-            arrays[which] = fresh
+            val which = nextAvailable
+            val arr = arrays[which]
+            nextAvailable = arr[0]
+            if (arr.size < size) {
+                arrays[which] = IntArray(size + 1)
+            } else {
+                Arrays.fill(arr, 0)
+            }
             return which
         }
     }
 
     fun free(which: Int) {
-        arrays[which] = blank
-        available.add(which)
+        arrays[which][0] = nextAvailable
+        nextAvailable = which
     }
 
     fun input(): Int {
@@ -627,8 +650,7 @@ class UM(
             out.write(outBuffer, outPos, outBuffer.size - outPos)
             out.write(outBuffer, 0, outPos)
             for (j in arrays) { out.writeInt(j.size); j.forEach(out::writeInt) }
-            out.writeInt(available.size)
-            available.forEach(out::writeInt)
+            out.writeInt(nextAvailable)
         }
         println("Saved")
     }
