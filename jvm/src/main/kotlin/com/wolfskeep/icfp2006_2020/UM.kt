@@ -544,6 +544,8 @@ class UM(
     var terminalIn: LineReader? = null
     var pendingLine = ""
 
+    var maxAlloc = 0
+
     fun run() {
         TerminalBuilder.terminal().use { terminal ->
             val ti = LineReaderBuilder.builder().terminal(terminal).build()
@@ -560,6 +562,7 @@ class UM(
                 MakeRunner.runner.run(this, registers, arrays[0], 0, finger, arrays)
             } catch (e: CleanExitException) {} 
         }
+        System.err.println("maxAlloc: $maxAlloc")
     }
 
     fun traceFrag(pos: Int) {
@@ -600,11 +603,13 @@ class UM(
             arrays[newSize - 1][0] = -1
             arrays[oldSize] = IntArray(size + 1)
             nextAvailable = oldSize + 1
+            maxAlloc = oldSize
             return oldSize
         } else {
             val which = nextAvailable
             val arr = arrays[which]
             nextAvailable = arr[0]
+            if (maxAlloc < which) maxAlloc = which
             if (arr.size < size) {
                 arrays[which] = IntArray(size + 1)
             } else {
