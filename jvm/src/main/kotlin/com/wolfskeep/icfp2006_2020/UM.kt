@@ -999,6 +999,7 @@ class UM(
     var jumpViaTable = 0L
     var jumpFallthrough = 0L
     var jumpUnknown = 0L
+    var maxAlloc = 0
 
     val checked = mutableSetOf<Int>()
 
@@ -1110,6 +1111,7 @@ class UM(
                 System.err.println("  Failure:     $fragFailure  (${fragFailure * 100 / fragLookup}%)")
                 System.err.println("  Run:         $fragRun  (${fragRun * 100 / fragLookup}%)")
                 System.err.println("  Invalidate:  $fragInvalidate")
+                System.err.println("maxAlloc: $maxAlloc")
             }
         }
     }
@@ -1182,6 +1184,7 @@ class UM(
         if (available.size == 0) {
             val which = arrays.size
             arrays += fresh
+            maxAlloc = which
             return which
         } else {
             val which = available.removeLast()
