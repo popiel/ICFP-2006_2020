@@ -125,10 +125,8 @@ open class StackOps {
     fun free(which: StackManipulation) = invokeUMMethod("free", which)
     val input = invokeUMMethod("input")
     fun output(what: StackManipulation) = invokeUMMethod("output", what)
-    fun clearCorruptedFragments(offset: StackManipulation, nextPos: Int, finalPos: Int) =
-        invokeUMMethod("clearCorruptedFragments", offset, IntegerConstant.forValue(nextPos), IntegerConstant.forValue(finalPos))
     fun clearCorruptedFragments(offset: StackManipulation, nextPos: Int) =
-        invokeUMMethod("clearCorruptedFragments", offset, IntegerConstant.forValue(nextPos), getFragmentEnd)
+        invokeUMMethod("clearCorruptedFragments", offset, IntegerConstant.forValue(nextPos), getFragmentStart, getFragmentEnd)
     fun doCloneArray(which: StackManipulation) = invokeUMMethod("doCloneArray", which)
     fun traceFrag(pos: Int) = if (traceFrag) invokeUMMethod("traceFrag", IntegerConstant.forValue(pos)) else StackManipulation.Trivial.INSTANCE
     fun traceOp(pos: Int, op: Int, aPos: Int, bPos: Int, cPos: Int) = if (traceOp) invokeUMMethod("traceOp", IntegerConstant.forValue(pos), IntegerConstant.forValue(op), IntegerConstant.forValue(aPos), IntegerConstant.forValue(bPos), IntegerConstant.forValue(cPos)) else StackManipulation.Trivial.INSTANCE
@@ -141,6 +139,13 @@ open class StackOps {
         ArrayAccess.REFERENCE.load(),
         TypeCasting.to(TypeDescription.ForLoadedType(IntArray::class.java))
     )
+    val getFragmentStart = 
+        StackManipulation.Compound(
+            MethodVariableAccess.REFERENCE.loadFrom(0),
+            MethodInvocation.invoke(
+                MethodDescription.ForLoadedMethod(Fragment::class.java.getMethod("getStart"))
+            )
+        )
     val getFragmentEnd = 
         StackManipulation.Compound(
             MethodVariableAccess.REFERENCE.loadFrom(0),
@@ -987,7 +992,7 @@ class UM(
     var terminalIn: LineReader? = null
     var pendingLine = ""
 
-    val fragments: SortedMap<Int, Fragment> = TreeMap<Int, Fragment>()
+    val fragments = HashMap<Int, Fragment>()
     var fragLookup = 0L
     var fragCompile = 0L
     var fragFailure = 0L
@@ -1063,7 +1068,7 @@ class UM(
                                 1 -> A = arrays[B][C]
                                 2 -> {
                                     arrays[A][B] = C
-                                    if (A == 0) clearCorruptedFragments(B, -1, -1)
+                                    if (A == 0) clearCorruptedFragments(B, -1, -1, -1)
                                 }
                                 3 -> A = B + C
                                 4 -> A = (B.toUInt() * C.toUInt()).toInt()
@@ -1143,21 +1148,18 @@ class UM(
         arrays[0] = arrays[which].clone()
     }
 
-    fun clearCorruptedFragments(offset: Int, nextPos: Int, finalPos: Int) {
+    fun clearCorruptedFragments(offset: Int, nextPos: Int, startPos: Int, finalPos: Int) {
         if (checked.contains(offset)) return
         checked.add(offset)
-        val iter = fragments.entries.iterator()
-        var badFrag: Fragment? = null
-        while (iter.hasNext()) {
-            val entry = iter.next()
-            if (entry.key > offset && entry.value != badFrag) break
-            if (entry.value.end > offset) {
+        val iter = fragments.iterator()
+        iter.forEach { (k, v) ->
+            if (v.start <= offset && v.end > offset) {
                 fragInvalidate += 1
                 // System.err.println("===> Invalidated ${entry.key}-${entry.value.end}")
                 iter.remove()
             }
         }
-        if (offset >= nextPos && offset <= finalPos) {
+        if (offset >= startPos && offset < finalPos) {
             finger = nextPos
             // System.err.println("===> Interrupted at $nextPos")
             throw InterruptedFragmentException()
