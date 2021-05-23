@@ -54,14 +54,12 @@ fun loadState(ds: DataInputStream, first: Int): UM {
     for (j in 0..7) registers[j] = ds.readInt()
     val outBuffer = ByteArray(256)
     ds.readFully(outBuffer)
-    val arrays = ArrayList<IntArray>()
-    for (j in 0 until (first and ((1 shl 28) - 1))) {
+    val arrays = Array<IntArray>(first and 0x0fffffff) {
         val arr = IntArray(ds.readInt())
         for (k in 0 until arr.size) arr[k] = ds.readInt()
-        arrays += arr
+        arr
     }
-    val available = ArrayDeque<Int>()
-    for (j in 0 until ds.readInt()) available.add(ds.readInt())
+    val nextAvailable = ds.readInt()
 
     print(if (outBuffer[0].toInt() == 0) {
         outBuffer.dropWhile { it.toInt() == 0 }
@@ -70,7 +68,7 @@ fun loadState(ds: DataInputStream, first: Int): UM {
     }.joinToString("") { it.toChar().toString() })
     System.out.flush()
 
-    return UM(arrays, available, registers, finger, outBuffer)
+    return UM(arrays, nextAvailable, registers, finger, outBuffer)
 }
 
 interface Fragment {
@@ -140,7 +138,7 @@ open class StackOps {
     val clear = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(SortedMap::class.java.getMethod("clear")))
     val clone = MethodInvocation.invoke(MethodDescription.ForLoadedMethod(Object::class.java.getDeclaredMethod("clone")))
     val arrayList_get = StackManipulation.Compound(
-        MethodInvocation.invoke(MethodDescription.ForLoadedMethod(java.util.List::class.java.getDeclaredMethod("get", Int::class.java))),
+        ArrayAccess.REFERENCE.load(),
         TypeCasting.to(TypeDescription.ForLoadedType(IntArray::class.java))
     )
     val getFragmentEnd = 
@@ -967,15 +965,15 @@ class InterruptedFragmentException(): RuntimeException()
 class CleanExitException(): RuntimeException()
 
 class UM(
-        val arrays: MutableList<IntArray>,
-        val available: ArrayDeque<Int>,
+        var arrays: Array<IntArray>,
+        var nextAvailable: Int,
         val registers: IntArray,
         var finger: Int,
         val outBuffer: ByteArray
 ) {
     constructor(a0: IntArray): this(
-            mutableListOf(a0),
-            ArrayDeque<Int>(),
+            arrayOf(a0),
+            -1,
             IntArray(8),
             0,
             ByteArray(256)
@@ -1072,17 +1070,8 @@ class UM(
                                 5 -> A = (B.toUInt() / C.toUInt()).toInt()
                                 6 -> A = (B and C).inv()
                                 7 -> throw CleanExitException()
-                                8 -> {
-                                    val fresh = if (C == 0) blank else IntArray(C)
-                                    if (available.size == 0) {
-                                        B = arrays.size
-                                        arrays += fresh
-                                    } else {
-                                        B = available.removeLast()
-                                        arrays[B] = fresh
-                                    }
-                                }
-                                9 -> { arrays[C] = blank; available.add(C) }
+                                8 -> B = allocate(C)
+                                9 -> free(C)
                                 10 -> output(C)
                                 11 -> C = input()
                                 12 -> {
@@ -1180,23 +1169,40 @@ class UM(
     }
 
     fun allocate(size: Int): Int {
-        val fresh = if (size == 0) blank else IntArray(size)
-        if (available.size == 0) {
-            val which = arrays.size
-            arrays += fresh
-            maxAlloc = which
-            return which
+        if (nextAvailable < 0) {
+            val oldSize = arrays.size
+            val newSize = if (oldSize < 16) 16 else oldSize * 2
+            arrays = Arrays.copyOf(arrays, newSize)
+            var n = oldSize + 1
+            while (n < newSize) {
+                arrays[n] = IntArray(8)
+                arrays[n][0] = n + 1
+                n = n + 1
+            }
+            arrays[newSize - 1][0] = -1
+            arrays[oldSize] = IntArray(size + 1)
+            nextAvailable = oldSize + 1
+            maxAlloc = oldSize
+            return oldSize
         } else {
-            val which = available.removeLast()
-            arrays[which] = fresh
+            val which = nextAvailable
+            val arr = arrays[which]
+            nextAvailable = arr[0]
+            if (maxAlloc < which) maxAlloc = which
+            if (arr.size < size) {
+                arrays[which] = IntArray(size + 1)
+            } else {
+                Arrays.fill(arr, 0)
+            }
             return which
         }
     }
 
     fun free(which: Int) {
-        arrays[which] = blank
-        available.add(which)
+        arrays[which][0] = nextAvailable
+        nextAvailable = which
     }
+
 
     fun input(): Int {
         return try {
@@ -1229,8 +1235,7 @@ class UM(
             out.write(outBuffer, outPos, outBuffer.size - outPos)
             out.write(outBuffer, 0, outPos)
             for (j in arrays) { out.writeInt(j.size); j.forEach(out::writeInt) }
-            out.writeInt(available.size)
-            available.forEach(out::writeInt)
+            out.writeInt(nextAvailable)
         }
         println("Saved")
     }
