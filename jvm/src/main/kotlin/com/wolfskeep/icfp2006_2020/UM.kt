@@ -71,10 +71,11 @@ fun loadState(ds: DataInputStream, first: Int): UM {
     return UM(arrays, nextAvailable, registers, finger, outBuffer)
 }
 
-interface Fragment {
-    val start: Int
-    val end: Int
-    fun run(um: UM, registers: IntArray)
+abstract class Fragment {
+    var invalid: Boolean = false
+    abstract val start: Int
+    abstract val end: Int
+    abstract fun run(um: UM, registers: IntArray)
 }
 
 open class StackOps {
@@ -993,6 +994,8 @@ class UM(
     var pendingLine = ""
 
     val fragments = HashMap<Int, Fragment>()
+    var allFragments = Array<Fragment?>(512) { null }
+    var numFragments = 0
     var fragLookup = 0L
     var fragCompile = 0L
     var fragFailure = 0L
@@ -1039,17 +1042,31 @@ class UM(
                 while (true) {
                     // System.err.println("TRACE: Starting fragment at $finger with [${registers.joinToString(", ") { it.toString() }}]")
                     fragLookup += 1
-                    val fragment = fragments[finger] ?: try {
-                        fragCompile += 1
-                        val (fragment, targets) = findBlocks(arrays[0], finger, arrays[0].size)
-                        fragments += targets.associateWith { fragment }
-                        checked.removeAll(checked.filter { it >= finger || it < fragment.end })
-                        fragment
-                    } catch (e: Exception) {
-                        fragFailure += 1
-                        System.err.println("compile failed:")
-                        e.printStackTrace()
-                        null
+                    var fragment = fragments[finger]
+                    if (fragment?.invalid != false) {
+                        // Both missing and invalid
+                        fragment = fragments[finger] ?: try {
+                            fragCompile += 1
+                            val (fragment, targets) = findBlocks(arrays[0], finger, arrays[0].size)
+                            fragments += targets.associateWith { fragment }
+                            checked.removeAll(checked.filter { it >= finger || it < fragment.end })
+                            if (numFragments >= allFragments.size) {
+                                allFragments = Arrays.copyOf(allFragments, allFragments.size * 2)
+                            }
+                            var j = numFragments
+                            while (j > 0 && allFragments[j - 1]!!.start > finger) {
+                                allFragments[j] = allFragments[j - 1]
+                                j -= 1
+                            }
+                            allFragments[j] = fragment
+                            numFragments += 1
+                            fragment
+                        } catch (e: Exception) {
+                            fragFailure += 1
+                            System.err.println("compile failed:")
+                            e.printStackTrace()
+                            null
+                        }
                     }
                     if (fragment != null) {
                         fragRun += 1
@@ -1080,10 +1097,7 @@ class UM(
                                 10 -> output(C)
                                 11 -> C = input()
                                 12 -> {
-                                    if (B != 0) {
-                                        fragments.clear()
-                                        arrays[0] = arrays[B].clone()
-                                    }
+                                    if (B != 0) doCloneArray(B)
                                     finger = C
                                     break@interpreter
                                 }
@@ -1145,19 +1159,39 @@ class UM(
     fun doCloneArray(which: Int) {
         fragments.clear()
         checked.clear()
+        Arrays.fill(allFragments, null)
+        numFragments = 0
         arrays[0] = arrays[which].clone()
     }
 
     fun clearCorruptedFragments(offset: Int, nextPos: Int, startPos: Int, finalPos: Int) {
         if (checked.contains(offset)) return
         checked.add(offset)
-        val iter = fragments.iterator()
-        iter.forEach { (k, v) ->
-            if (v.start <= offset && v.end > offset) {
-                fragInvalidate += 1
-                // System.err.println("===> Invalidated ${entry.key}-${entry.value.end}")
-                iter.remove()
+        var j = 0
+        while (j < numFragments && allFragments[j]!!.start <= offset) {
+            if (allFragments[j]!!.end > offset) {
+                var k = j
+                allFragments[j]!!.invalid = true
+                // System.err.println("===> Invalidated ${allFragments[j]!!.start}-${allFragments[j]!!.end}")
+                j += 1
+                while (j < numFragments && allFragments[j]!!.start <= offset) {
+                    if (allFragments[j]!!.end > offset) {
+                        allFragments[j]!!.invalid = true
+                        // System.err.println("===> Invalidated ${allFragments[j]!!.start}-${allFragments[j]!!.end}")
+                    } else {
+                        allFragments[k] = allFragments[j]
+                        k += 1
+                    }
+                    j += 1
+                }
+                if (j < numFragments) {
+                    System.arraycopy(allFragments, j, allFragments, k, numFragments - j)
+                    k += numFragments - j
+                }
+                Arrays.fill(allFragments, k, numFragments, null)
+                numFragments = k
             }
+            j += 1
         }
         if (offset >= startPos && offset < finalPos) {
             finger = nextPos
