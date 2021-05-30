@@ -176,7 +176,7 @@ class Ref private constructor(
         val fetches = Array<Ref>(8) { Ref(-1, (15 shl 28) + it) }
     }
 
-    constructor(pos: Int, op: Int, touched: Array<Ref>): this(
+    constructor(pos: Int, op: Int, touched: Array<Ref>, reads: BooleanArray): this(
         pos + 1,
         op,
         touched[(op ushr 6) and 7],
@@ -441,7 +441,7 @@ class Ref private constructor(
 //                    output(IntegerConstant.forValue(34)),
                     setFinger(getRegister(op and 7)),
                     MethodReturn.VOID
-                ), inLocals, 8)
+                ), inLocals, 7)
             }
 */
 
@@ -607,27 +607,61 @@ fun Ref?.possibleValues(): Set<Int>? = if (this == null) null else when (op ushr
     else -> null
 }
 
-class Block(
+class Chunk(
     val code: IntArray,
     val start: Int,
     val stop: Int,
-    labels: Map<Int, Label>,
-    jumpLabel: Label
+    val next: Chunk?
 ) {
-    val touched = Ref.Companion.fetches.clone()
-    val refs = code.asList().subList(start, stop).mapIndexed { off, op ->
-        Ref(start + off, op, touched)
-    }
-    val refsPlusExposed = if (refs.last().needsExposure()) {
-        refs + Ref(stop, 14 shl 28, touched)
-    } else {
-        refs
-    }
     val canFallThrough = when (code[stop - 1] ushr 28) {
         7, 12 -> false
         else -> true
     }
 
+    val analyze: Triple<Int, Int, Int> = code.asList().subList(start, stop).fold(Triple(0, 0, 0xff)) { (r, d, u), op ->
+        val nextR = (readMask(op) and u) or r
+        val target = writeMask(op)
+        val nextD = (target and nextR.inv()) or d
+        val nextU = u and target.inv()
+        Triple(nextR, nextD, nextU)
+    }.let { (r, d, u) ->
+        if (next != null && canFallThrough) {
+            Triple(
+                r or next.reads,
+                d or (next.destroys and r.inv()),
+                u and next.untouched
+            )
+        } else {
+            Triple(r, d, u)
+        }
+    }
+
+    val reads     get() = analyze.first
+    val destroys  get() = analyze.second
+    val untouched get() = analyze.third
+}
+
+class Block(
+    val chunk: Chunk,
+    labels: Map<Int, Label>,
+    jumpLabel: Label
+) {
+    val code  get() = chunk.code
+    val start get() = chunk.start
+    val stop  get() = chunk.stop
+
+    val touched = Ref.Companion.fetches.clone()
+    val reads = BooleanArray(8)
+    val refs = code.asList().subList(start, stop).mapIndexed { off, op ->
+        Ref(start + off, op, touched, reads)
+    }
+    val destroys = reads.mapIndexed { j, it -> !it && touched[j] != Ref.Companion.fetches[j] }
+
+    val refsPlusExposed = if (refs.last().needsExposure()) {
+        refs + Ref(stop, 14 shl 28, touched, reads)
+    } else {
+        refs
+    }
     val triple =
         refsPlusExposed
             .filter { it.hasSideEffects() }
@@ -647,6 +681,16 @@ fun regOut(op: Int): Int? = when (op ushr 28) {
     13 -> (op ushr 25) and 7
     else -> null
 }
+
+fun readMask(op: Int): Int {
+    val opcode = op ushr 28
+    return if (opcode == 7 || opcode == 11 || opcode == 13) { 0 } else {
+        (1 shl (op and 7)) or if (opcode >= 8 && opcode != 12) { 0 } else {
+        (1 shl ((op ushr 3) and 7)) or if (opcode == 0 || opcode == 2) {
+        (1 shl ((op ushr 6) and 7)) } else 0 }}
+}
+
+fun writeMask(op: Int): Int = regOut(op)?.let { 1 shl it } ?: 0
 
 fun canBeZero(code: IntArray, start: Int, stop: Int, which: Int): Boolean {
     var end = stop - 1
@@ -705,17 +749,23 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
         // System.err.println("Discovered $begin to $end")
     }
     val sorted = targets.toList().filter { it >= start && it <= end }.sorted()
+    val chunks = (sorted + end)
+        .windowed(2)
+        .reversed()
+        .scan(null as Chunk?) { next, (b, e) -> Chunk(code, b, e, next) }
+        .reversed()
+        .filterNotNull()
     val jumpLabel = Label()
     val labels = TreeMap<Int, Label>()
     sorted.associateWithTo(labels) { Label() }
-    val blocks = (sorted + end).windowed(2).map { (b, e) -> Block(code, b, e, labels, jumpLabel) }
+    val blocks = chunks.map { chunk -> Block(chunk, labels, jumpLabel) }
     val sizes = blocks.map { it.size }.scan(20) { a, b -> a + b + 8 }
     // System.err.println("Found ${blocks.size} blocks with total size ${sizes.last()}")
     val trimmed = if (sizes.last() < 40000) blocks else {
-        val sorted2 = sorted.take(sizes.indexOfFirst { it > 40000 })
+        val chunks2 = chunks.take(sizes.indexOfFirst { it > 40000 })
         labels.clear()
-        sorted2.dropLast(1).associateWithTo(labels) { Label() }
-        sorted2.windowed(2).map { (b, e) -> Block(code, b, e, labels, jumpLabel) }
+        chunks2.map { it.start }.associateWithTo(labels) { Label() }
+        chunks2.map { chunk -> Block(chunk, labels, jumpLabel) }
     }
     // System.err.println("Trimmed to ${trimmed.size} blocks with total size ${sizes[trimmed.size - 1]}")
 
@@ -732,7 +782,7 @@ fun findBlocks(code: IntArray, start: Int, stop: Int): Pair<Fragment, Iterable<I
             Ref.Companion.traceFrag(it.start),
             it.stackCode
         ) }.toTypedArray()),
-        if (trimmed.last().canFallThrough)
+        if (trimmed.last().chunk.canFallThrough)
             Ref.Companion.setFinger(IntegerConstant.forValue(trimmed.last().stop))
         else
             StackManipulation.Trivial.INSTANCE,
@@ -1172,11 +1222,13 @@ class UM(
             if (allFragments[j]!!.end > offset) {
                 var k = j
                 allFragments[j]!!.invalid = true
+                fragInvalidate += 1
                 // System.err.println("===> Invalidated ${allFragments[j]!!.start}-${allFragments[j]!!.end}")
                 j += 1
                 while (j < numFragments && allFragments[j]!!.start <= offset) {
                     if (allFragments[j]!!.end > offset) {
                         allFragments[j]!!.invalid = true
+                        fragInvalidate += 1
                         // System.err.println("===> Invalidated ${allFragments[j]!!.start}-${allFragments[j]!!.end}")
                     } else {
                         allFragments[k] = allFragments[j]
